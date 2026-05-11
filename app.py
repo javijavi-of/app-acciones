@@ -2,86 +2,97 @@ import streamlit as st
 import pandas as pd
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
-st.set_page_config(page_title="IPSA Terminal Histórica", layout="wide")
+st.set_page_config(page_title="Terminal Financiera IPSA", layout="wide", initial_sidebar_state="expanded")
 
-URL_GOOGLE = "https://docs.google.com/spreadsheets/d/1IJmrcL8f6l3qIDW7gw4CjLRBRiFkCFN4KCQeKaQbPic/edit?usp=sharing"
-CSV_URL = URL_GOOGLE.replace("/edit?usp=sharing", "/export?format=csv")
+# Link Base y GIDs que me pasaste
+BASE_URL = "https://docs.google.com/spreadsheets/d/1IJmrcL8f6l3qIDW7gw4CjLRBRiFkCFN4KCQeKaQbPic/export?format=csv&gid="
 
-st.title("🏛️ Terminal de Gestión Activa: app-acciones")
-st.markdown("_Historial sincronizado del equipo (Registro Manual)_")
-st.markdown("---")
+HOJAS = {
+    "Seguimiento Cartera": "1701047918", 
+    "40 acciones": "127922189",
+    "Rds. 40 acciones": "67985094",
+    "IPSA y Cartera": "445876639",
+    "Omega": "426270219",
+    "RI": "2022302992"
+}
 
-def limpiar_numero(valor):
-    """Limpia formatos de moneda chilena (puntos y comas)"""
+def limpiar_num(v):
+    """Limpia el formato chileno (1.500,50) a número de Python"""
     try:
-        if pd.isna(valor) or str(valor).strip() == "": 
+        if pd.isna(v) or str(v).strip() == "" or any(c.isalpha() for c in str(v)):
             return 0.0
-        # Quitamos puntos de miles y cambiamos coma decimal por punto
-        s = str(valor).replace('.', '').replace(',', '.')
+        # Eliminar puntos de miles y cambiar coma por punto decimal
+        s = str(v).replace('.', '').replace(',', '.')
         return float(s)
     except:
         return 0.0
 
+# --- NAVEGACIÓN ---
+st.sidebar.title("📊 Terminal Financiera")
+st.sidebar.markdown("---")
+seleccion = st.sidebar.radio("Ir a la hoja:", list(HOJAS.keys()))
+
 try:
-    # 1. CARGA DE DATOS
-    raw_df = pd.read_csv(CSV_URL, header=None)
-    
-    # 2. SEPARACIÓN DE DATOS
-    fila_nombres = 3
-    fila_inicio_datos = 5
-    
-    df_datos = raw_df.iloc[fila_inicio_datos:].copy()
-    # Solo filas que tengan una fecha (Columna C / Índice 2)
-    df_datos = df_datos[df_datos[2].notna()]
+    url = BASE_URL + HOJAS[seleccion]
+    # Leemos sin encabezado para procesar manualmente
+    df_raw = pd.read_csv(url, header=None)
 
-    # 3. MÉTRICAS SUPERIORES
-    if not df_datos.empty:
-        ultima = df_datos.iloc[-1]
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Valor Total Cartera", f"${limpiar_numero(ultima[4]):,.0f}")
-        c2.metric("Caja (Sobrante)", f"${limpiar_numero(ultima[5]):,.0f}")
-        c3.metric("Última Fecha", str(ultima[2]))
-    
-    st.divider()
-
-    # 4. PROCESAMIENTO DE ACCIONES
-    principales = ["ANDINAB", "BCI", "BSANTANDER", "CENCOMALLS", "MALLPLAZA", 
-                   "PARAUCO", "SALFACORP", "SQMB", "ECL", "ENELCHILE", 
-                   "ILC", "OROBLANCO", "ENELGXCH", "NORTEGRAN", "SQMA"]
-    
-    found_principales = []
-    found_otros = []
-
-    # Recorremos las columnas buscando acciones (Desde índice 7 de 3 en 3)
-    for col in range(7, raw_df.shape[1], 3):
-        nombre = str(raw_df.iloc[fila_nombres, col]).strip().upper()
+    if seleccion == "Seguimiento Cartera":
+        st.title("🏛️ Seguimiento de Cartera vs IPSA")
         
-        if nombre and nombre != "NAN" and "UNNAMED" not in nombre:
-            # Construimos la tabla histórica de esta acción
-            hist = df_datos[[2, 1, col, col+1, col+2]].copy()
-            hist.columns = ["Fecha", "Periodo", "Precio Cierre", "N° Acciones", "Total"]
+        # 1. LIMPIEZA DE DATOS CARRETEROS
+        # Los datos reales empiezan en la fila 6 (índice 5)
+        # Filtramos filas que tengan algo parecido a una fecha en la columna C (índice 2)
+        df_clean = df_raw.iloc[5:].copy()
+        df_clean = df_clean[df_clean[2].notna() & df_clean[2].str.contains(r'\d')]
+        
+        if not df_clean.empty:
+            # Buscamos la última fila que realmente tenga el valor de la cartera (Columna E / Índice 4)
+            # Escaneamos de abajo hacia arriba para saltarnos celdas vacías al final del Excel
+            ultima_valida = df_clean[df_clean[4].apply(limpiar_num) > 0].iloc[-1]
             
-            # Limpiamos los números de las 3 columnas financieras
-            for c_name in ["Precio Cierre", "N° Acciones", "Total"]:
-                hist[c_name] = hist[c_name].apply(limpiar_numero)
+            # --- MÉTRICAS SUPERIORES ---
+            m1, m2, m3 = st.columns(3)
+            with m1:
+                st.metric("Valor Total Cartera", f"${limpiar_num(ultima_valida[4]):,.0f}")
+            with m2:
+                st.metric("Caja (Sobrante)", f"${limpiar_num(ultima_valida[5]):,.0f}")
+            with m3:
+                st.metric("Fecha Último Registro", str(ultima_valida[2]))
 
-            if nombre in principales:
-                found_principales.append((nombre, hist))
-            else:
-                found_otros.append((nombre, hist))
+            st.divider()
 
-    # --- RENDERIZADO VISUAL ---
-    st.subheader("📋 Historial por Título (15 Principales)")
-    for name, data in found_principales:
-        with st.expander(f"📈 {name} - Ver historial de investigación manual"):
-            st.dataframe(data, use_container_width=True, hide_index=True)
+            # --- HISTORIAL POR ACCIÓN ---
+            st.subheader("📈 Evolución por Título")
+            st.info("Despliega cada acción para ver su historial 'carretero' y el cálculo de Monto Total.")
+            
+            # Columnas de acciones empiezan en H (7) y van de 3 en 3
+            for col_idx in range(7, df_raw.shape[1], 3):
+                nombre = str(df_raw.iloc[3, col_idx]).strip().upper() # Fila 4 del Excel
+                
+                if nombre and "NAN" not in nombre and "UNNAMED" not in nombre:
+                    # Construir tabla: Fecha, Periodo, Precio, Cantidad
+                    h = df_clean[[2, 1, col_idx, col_idx + 1]].copy()
+                    h.columns = ["Fecha", "Periodo", "Precio Cierre", "Cantidad"]
+                    
+                    # Limpiar y Calcular
+                    h["Precio Cierre"] = h["Precio Cierre"].apply(limpiar_num)
+                    h["Cantidad"] = h["Cantidad"].apply(limpiar_num)
+                    h["Total Cartera ($)"] = h["Precio Cierre"] * h["Cantidad"]
+                    
+                    # Solo mostrar filas donde el precio es mayor a 0 (días que se investigó)
+                    h = h[h["Precio Cierre"] > 0]
 
-    if found_otros:
-        st.divider()
-        st.subheader("📂 Otros Títulos en Cartera")
-        for name, data in found_otros:
-            with st.expander(f"📎 {name}"):
-                st.dataframe(data, use_container_width=True, hide_index=True)
+                    with st.expander(f"🔹 {nombre}"):
+                        st.dataframe(h, use_container_width=True, hide_index=True)
+        else:
+            st.warning("No se detectaron datos en la hoja de Seguimiento. Revisa la columna C del Excel.")
+
+    else:
+        # VISUALIZACIÓN PARA LAS OTRAS HOJAS
+        st.title(f"📑 Hoja: {seleccion}")
+        # Mostramos los datos desde la fila donde suelen empezar los encabezados (fila 3 o 4)
+        st.dataframe(df_raw.iloc[2:], use_container_width=True)
 
 except Exception as e:
-    st.error(f"Error al organizar el historial: {e}")
+    st.error(f"Error cargando la hoja '{seleccion}': {e}")
