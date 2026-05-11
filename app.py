@@ -18,7 +18,7 @@ HOJAS = {
 }
 
 def limpiar_num(v):
-    """Convierte texto a número, eliminando comas conflictivas"""
+    """Convierte texto de Excel a número, eliminando comas conflictivas"""
     try:
         if pd.isna(v): return 0.0
         s_val = str(v).strip().replace(',', '') 
@@ -28,15 +28,15 @@ def limpiar_num(v):
         return 0.0
 
 def formato_excel(valor):
-    """Asegura formato 1,234,567.89"""
+    """Asegura que el valor esté limpio antes de darle formato 1,234,567.89"""
     val_num = limpiar_num(valor)
     return "{:,.2f}".format(val_num)
 
-# --- BARRA LATERAL ---
-st.sidebar.title("🛠️ Herramientas de Control")
+# --- BARRA LATERAL: TU ZONA DE TRABAJO INDEPENDIENTE ---
+st.sidebar.title("🛠️ Herramientas de Cierre Diario")
 
-with st.sidebar.expander("🔍 Buscador de Precios", expanded=True):
-    t_input = st.text_input("Nemotécnico (ej: BCI, LTM):", "").upper().strip()
+with st.sidebar.expander("🔍 1. Buscador de Precios", expanded=True):
+    t_input = st.text_input("Nemotécnico (ej: ANDINAB):", "").upper().strip()
     if t_input:
         t_search = t_input if ".SN" in t_input else f"{t_input}.SN"
         try:
@@ -46,14 +46,18 @@ with st.sidebar.expander("🔍 Buscador de Precios", expanded=True):
                 st.success(f"{t_input}: ${formato_excel(hist['Close'].iloc[-1])}")
         except: st.sidebar.error("Error de conexión.")
 
-with st.sidebar.expander("🧮 Calculadora de Montos", expanded=False):
-    c_precio = st.number_input("Precio ($)", min_value=0.0, step=1.0, format="%.2f")
-    c_cant = st.number_input("Cantidad", min_value=0, step=1)
-    st.info(f"**Monto:**\n${formato_excel(c_precio * c_cant)}")
+with st.sidebar.expander("🧮 2. Calculadora de Montos (Para Excel)", expanded=True):
+    st.markdown("Calcula aquí el monto antes de pegarlo en tu Google Sheet. **(Esto no altera la tabla principal)**.")
+    c_precio = st.number_input("Precio de Cierre ($)", min_value=0.0, step=1.0, format="%.2f")
+    c_cant = st.number_input("Cantidad de Acciones", min_value=0, step=1)
+    
+    if c_precio > 0 and c_cant > 0:
+        st.success(f"**Monto a ingresar en Excel:**\n### ${formato_excel(c_precio * c_cant)}")
 
 st.sidebar.markdown("---")
 seleccion = st.sidebar.radio("Navegar por el Excel:", list(HOJAS.keys()))
 
+# --- NÚCLEO DEL PROGRAMA (LA VERSIÓN QUE FUNCIONA PERFECTO) ---
 try:
     url = BASE_URL + HOJAS[seleccion]
     df_raw = pd.read_csv(url, header=None)
@@ -69,18 +73,11 @@ try:
                 var_ipsa = (ipsa_data.iloc[-1] / ipsa_data.iloc[-2]) - 1
         except: pass
 
-        # 2. Limpieza de datos básica
+        # 2. Limpieza de datos
         df_clean = df_raw.iloc[5:].copy()
         df_clean = df_clean[df_clean[2].notna()] # Filas con fecha
 
-        # --- EDITOR EN VIVO ---
-        st.subheader("📝 Simulador de Cierre Diario")
-        st.info("Haz doble clic en cualquier celda para modificar precios o cantidades. **Los cálculos de arriba se actualizarán automáticamente.** (Luego copia tus totales a tu Excel).")
-        
-        # Mostramos la tabla para que la edites (las columnas 2 es Fecha, 1 es Periodo)
-        df_editado = st.data_editor(df_clean, hide_index=True, use_container_width=True)
-
-        # --- MOTOR DE CÁLCULO SOBRE LOS DATOS EDITADOS ---
+        # --- MOTOR DE CÁLCULO ESTABLE ---
         def calcular_patrimonio(fila):
             suma_acciones = 0
             for c in range(7, len(fila), 3):
@@ -88,39 +85,50 @@ try:
                     suma_acciones += (limpiar_num(fila[c]) * limpiar_num(fila[c+1]))
             return suma_acciones + limpiar_num(fila[5]) + limpiar_num(fila[6])
 
-        # Aplicamos la matemática a la tabla editada
-        df_editado['Patrimonio_Total'] = df_editado.apply(calcular_patrimonio, axis=1)
-        df_con_dinero = df_editado[df_editado['Patrimonio_Total'] > 0]
+        df_clean['Patrimonio_Total'] = df_clean.apply(calcular_patrimonio, axis=1)
+
+        # 3. FILTRAR PARA MÉTRICAS
+        df_con_dinero = df_clean[df_clean['Patrimonio_Total'] > 0]
 
         if not df_con_dinero.empty:
             ultimo_dato = df_con_dinero.iloc[-1]
             val_total = ultimo_dato['Patrimonio_Total']
             caja_f = limpiar_num(ultimo_dato[5])
 
-            # --- MÉTRICAS SUPERIORES DINÁMICAS ---
-            st.divider()
+            # --- MÉTRICAS SUPERIORES ---
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Valor Total Cartera (Calculado)", f"${formato_excel(val_total)}")
+            m1.metric("Valor Total Cartera", f"${formato_excel(val_total)}")
             m2.metric("Variación IPSA (Live)", f"{var_ipsa:+.2%}")
             m3.metric("Caja Sobrante (F)", f"${formato_excel(caja_f)}")
-            m4.metric("Fecha de Hoy", datetime.now().strftime("%d/%m/%Y"))
+            m4.metric("Fecha del Sistema", datetime.now().strftime("%d/%m/%Y"))
 
             st.divider()
 
-            # --- DETALLE POR ACCIÓN (Basado en lo que edites) ---
-            st.subheader("📋 Detalle de Títulos (Actualizado en Vivo)")
+            # --- TABLA DE EVOLUCIÓN ---
+            st.subheader("📈 Evolución Diaria del Patrimonio")
+            df_evol = df_clean[[2, 1, 'Patrimonio_Total']].copy()
+            df_evol.columns = ["Fecha", "Periodo", "Total Cartera ($)"]
+            df_evol["Total Cartera ($)"] = df_evol["Total Cartera ($)"].apply(formato_excel)
+            st.dataframe(df_evol, use_container_width=True, hide_index=True)
+
+            st.divider()
+
+            # --- DETALLE POR ACCIÓN (Recuperado y Blindado) ---
+            st.subheader("📋 Detalle de Títulos")
             max_cols = df_raw.shape[1]
             for c_idx in range(7, max_cols, 3):
                 if c_idx + 1 < max_cols:
                     nombre = str(df_raw.iloc[3, c_idx]).strip().upper()
                     if nombre and "NAN" not in nombre and "UNNAMED" not in nombre:
-                        h = df_editado[[2, 1, c_idx, c_idx + 1]].copy()
+                        h = df_clean[[2, 1, c_idx, c_idx + 1]].copy()
                         h.columns = ["Fecha", "Periodo", "Precio", "Cantidad"]
                         
+                        # Cálculos matemáticos limpios
                         h["Precio_Num"] = h["Precio"].apply(limpiar_num)
                         h["Cantidad_Num"] = h["Cantidad"].apply(limpiar_num)
                         h["Monto ($)"] = h["Precio_Num"] * h["Cantidad_Num"]
                         
+                        # Aplicar formato de comas y puntos a la vista
                         h_vista = h[["Fecha", "Periodo", "Precio_Num", "Cantidad_Num", "Monto ($)"]].copy()
                         h_vista.columns = ["Fecha", "Periodo", "Precio", "Cantidad", "Monto ($)"]
                         
