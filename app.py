@@ -18,23 +18,20 @@ HOJAS = {
 }
 
 def limpiar_num(v):
-    """Limpia datos del Excel considerando coma como miles y punto como decimal"""
     try:
         s_val = str(v).strip().upper()
         if pd.isna(v) or s_val == "" or "#VALUE" in s_val: return 0.0
-        # Quitamos las comas (separador de miles) para que Python pueda operar
         s = s_val.replace(',', '')
         return float(s)
     except: return 0.0
 
 def formato_excel(valor):
-    """Formato: 1,234,567.89 (Coma miles, Punto decimal)"""
+    """Formato: 1,234,567.89"""
     return "{:,.2f}".format(valor)
 
-# --- BARRA LATERAL: HERRAMIENTAS ---
-st.sidebar.title("🛠️ Control de Gestión")
+# --- BARRA LATERAL: BUSCADOR Y CALCULADORA ---
+st.sidebar.title("🛠️ Herramientas de Control")
 
-# 1. Buscador (Yahoo Finance)
 with st.sidebar.expander("🔍 Buscador de Precios", expanded=True):
     t_input = st.text_input("Nemotécnico (ej: BCI, LTM):", "").upper().strip()
     if t_input:
@@ -44,17 +41,16 @@ with st.sidebar.expander("🔍 Buscador de Precios", expanded=True):
             hist = stock.history(period="1d")
             if not hist.empty:
                 st.success(f"{t_input}: {formato_excel(hist['Close'].iloc[-1])}")
-            else: st.error("No se encontraron datos.")
+            else: st.error("Sin datos.")
         except: st.error("Error de conexión.")
 
-# 2. Calculadora rápida
 with st.sidebar.expander("🧮 Calculadora de Montos", expanded=False):
     c_precio = st.number_input("Precio ($)", min_value=0.0, step=1.0, format="%.2f")
     c_cant = st.number_input("Cantidad", min_value=0, step=1)
-    st.info(f"**Monto Total:**\n{formato_excel(c_precio * c_cant)}")
+    st.info(f"**Monto:**\n{formato_excel(c_precio * c_cant)}")
 
 st.sidebar.markdown("---")
-seleccion = st.sidebar.radio("Hoja actual:", list(HOJAS.keys()))
+seleccion = st.sidebar.radio("Navegar por el Excel:", list(HOJAS.keys()))
 
 try:
     url = BASE_URL + HOJAS[seleccion]
@@ -63,82 +59,72 @@ try:
     if seleccion == "Seguimiento Cartera":
         st.title("🏛️ Terminal de Gestión Activa")
         
-        # Benchmarking IPSA
+        # 1. Benchmark IPSA en Vivo
         try:
-            ipsa = yf.download("^IPSA", period="2d", progress=False)['Close']
-            ret_ipsa = (ipsa.iloc[-1] / ipsa.iloc[-2]) - 1
-        except: ret_ipsa = 0.0
+            ipsa_ticker = yf.Ticker("^IPSA")
+            ipsa_hist = ipsa_ticker.history(period="2d")
+            ipsa_actual = ipsa_hist['Close'].iloc[-1]
+            ipsa_previo = ipsa_hist['Close'].iloc[-2]
+            var_ipsa = (ipsa_actual / ipsa_previo) - 1
+        except: var_ipsa = 0.0
 
-        # Datos reales (Fila 6 en adelante)
+        # 2. Limpieza de datos (Fila 6 en adelante)
         df_clean = df_raw.iloc[5:].copy()
         df_clean = df_clean[df_clean[2].notna()] # Filtro por fecha
 
-        # --- MOTOR DE CÁLCULO (LA LÓGICA QUE ME PEDISTE) ---
-        def auditor_cartera(fila):
-            # Sumamos (Precio * Cantidad) de cada acción (Empiezan en col H=7 de 3 en 3)
-            sumatoria_acciones = 0
-            num_cols = len(fila)
-            for c in range(7, num_cols, 3):
-                if c + 1 < num_cols:
-                    p = limpiar_num(fila[c])
-                    q = limpiar_num(fila[c+1])
-                    sumatoria_acciones += (p * q)
-            
-            # Agregamos las celdas F (índice 5) y G (índice 6) de tu fórmula de Excel
-            f_val = limpiar_num(fila[5])
-            g_val = limpiar_num(fila[6])
-            
-            return sumatoria_acciones + f_val + g_val
+        # 3. Lógica de Cálculo Exacto (Sumatoria de Inversiones + F + G)
+        def calcular_patrimonio_dia(fila):
+            suma_acciones = 0
+            # Acciones desde Columna H (7) de 3 en 3
+            for c in range(7, len(fila), 3):
+                if c + 1 < len(fila):
+                    suma_acciones += (limpiar_num(fila[c]) * limpiar_num(fila[c+1]))
+            # Columnas F (5) y G (6)
+            return suma_acciones + limpiar_num(fila[5]) + limpiar_num(fila[6])
 
-        # Python realiza el cálculo fila por fila
-        df_clean['Patrimonio_Calculado'] = df_clean.apply(auditor_cartera, axis=1)
+        df_clean['Patrimonio_Calculado'] = df_clean.apply(calcular_patrimonio_dia, axis=1)
         
-        # Último dato registrado
+        # OBTENEMOS LOS DATOS DE LA ÚLTIMA FILA INGRESADA
         ultima = df_clean.iloc[-1]
-        total_hoy = ultima['Patrimonio_Calculado']
-        caja_f = limpiar_num(ultima[5])
+        val_cartera_actual = ultima['Patrimonio_Calculado']
+        caja_sobrante_actual = limpiar_num(ultima[5]) # Columna F
+        fecha_dato = str(ultima[2])
 
-        # --- MÉTRICAS ---
+        # --- MÉTRICAS SUPERIORES (Cuadros Rojos de tu imagen) ---
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Valor Cartera (Acciones + F + G)", formato_excel(total_hoy))
-        m2.metric("IPSA Hoy", "{:+.2%}".format(ret_ipsa))
-        m3.metric("Caja Sobrante (F)", formato_excel(caja_f))
-        m4.metric("Fecha Sistema", datetime.now().strftime("%d/%m/%Y"))
+        m1.metric("Valor de Cartera", f"${formato_excel(val_cartera_actual)}")
+        m2.metric("Benchmark IPSA (Live)", f"{var_ipsa:+.2%}")
+        m3.metric("Caja Sobrante (F)", f"${formato_excel(caja_sobrante_actual)}")
+        m4.metric("Fecha del Dato", fecha_dato)
 
         st.divider()
 
-        # --- TABLA DE EVOLUCIÓN CALCULADA ---
-        st.subheader("📈 Evolución Diaria (Sumatoria de Inversiones)")
+        # --- TABLA DE EVOLUCIÓN ---
+        st.subheader("📈 Evolución Diaria del Patrimonio")
         df_evol = df_clean[[2, 1, 'Patrimonio_Calculado']].copy()
-        df_evol.columns = ["Fecha", "Periodo", "Patrimonio Total ($)"]
-        # Formatear números para la tabla
-        df_evol["Patrimonio Total ($)"] = df_evol["Patrimonio Total ($)"].apply(formato_excel)
+        df_evol.columns = ["Fecha", "Periodo", "Total Cartera ($)"]
+        df_evol["Total Cartera ($)"] = df_evol["Total Cartera ($)"].apply(formato_excel)
         st.dataframe(df_evol, use_container_width=True, hide_index=True)
 
         st.divider()
 
-        # --- DETALLE INDIVIDUAL ---
-        st.subheader("📋 Detalle de Inversión por Acción")
-        max_c = df_raw.shape[1]
-        for c in range(7, max_c, 3):
-            if c + 1 < max_c:
+        # --- DESPLEGABLES INDIVIDUALES ---
+        st.subheader("📋 Detalle por Título")
+        for c in range(7, df_raw.shape[1], 3):
+            if c + 1 < df_raw.shape[1]:
                 nombre = str(df_raw.iloc[3, c]).strip().upper()
                 if nombre and "NAN" not in nombre and "UNNAMED" not in nombre:
                     h = df_clean[[2, 1, c, c+1]].copy()
                     h.columns = ["Fecha", "Periodo", "Precio", "Cantidad"]
+                    h["Monto ($)"] = h["Precio"].apply(limpiar_num) * h["Cantidad"].apply(limpiar_num)
                     
-                    # Cálculos individuales por día
-                    h["Precio"] = h["Precio"].apply(limpiar_num)
-                    h["Cantidad"] = h["Cantidad"].apply(limpiar_num)
-                    h["Total Invertido ($)"] = h["Precio"] * h["Cantidad"]
-                    
-                    # Formatear para visualización
+                    # Formatear para la vista
                     h_vista = h.copy()
-                    for col in ["Precio", "Cantidad", "Total Invertido ($)"]:
-                        h_vista[col] = h_vista[col].apply(formato_excel)
+                    for col in ["Precio", "Cantidad", "Monto ($)"]:
+                        h_vista[col] = h_vista[col].apply(limpiar_num).apply(formato_excel)
 
                     with st.expander(f"🔹 {nombre}"):
-                        st.dataframe(h_vista[h["Precio"] > 0], use_container_width=True, hide_index=True)
+                        st.dataframe(h_vista[h["Precio"].apply(limpiar_num) > 0], use_container_width=True, hide_index=True)
 
     elif seleccion == "Omega":
         st.title("📉 Hoja Omega")
