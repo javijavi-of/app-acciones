@@ -4,9 +4,8 @@ import yfinance as yf
 from datetime import datetime
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
-st.set_page_config(page_title="Terminal Financiera IPSA", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Terminal IPSA Pro", layout="wide")
 
-# Link Base y GIDs oficiales
 BASE_URL = "https://docs.google.com/spreadsheets/d/1IJmrcL8f6l3qIDW7gw4CjLRBRiFkCFN4KCQeKaQbPic/export?format=csv&gid="
 
 HOJAS = {
@@ -19,93 +18,98 @@ HOJAS = {
 }
 
 def limpiar_num(v):
-    """Limpia cualquier texto, signo o error de Excel (#VALUE!)"""
     try:
         s_val = str(v).strip().upper()
         if pd.isna(v) or s_val == "" or "#VALUE" in s_val or "FECHA" in s_val:
             return 0.0
-        # Quitamos puntos de mil y cambiamos coma a punto decimal
         s = "".join(c for c in str(v) if c.isdigit() or c in [',', '.'])
         if ',' in s and '.' in s: s = s.replace('.', '').replace(',', '.')
         elif ',' in s: s = s.replace(',', '.')
         return float(s)
     except: return 0.0
 
-# --- BARRA LATERAL: BUSCADOR INTELIGENTE ---
-st.sidebar.title("🔍 Consultas en Vivo")
+# --- BARRA LATERAL: BUSCADOR MEJORADO ---
+st.sidebar.title("🔍 Consultas y Navegación")
 st.sidebar.subheader("Buscador de Precios")
-# El buscador ahora intenta encontrar la acción en la Bolsa de Santiago automáticamente
-t_input = st.sidebar.text_input("Nemotécnico (ej: BCI, SQM-B, COPEC):", "").upper().strip()
+t_input = st.sidebar.text_input("Nemotécnico (ej: BCI, SQMB, COPEC):", "").upper().strip()
 
 if t_input:
-    # Parche: si no tiene .SN, se lo ponemos nosotros
-    t_search = t_input if ".SN" in t_input else f"{t_input}.SN"
+    # Parche para tickers chilenos comunes
+    t_ready = t_input.replace("-B", "B") # Yahoo a veces prefiere SQMB sobre SQM-B
+    if not t_ready.endswith(".SN"): t_ready += ".SN"
+    
     try:
-        with st.sidebar.spinner(f"Buscando {t_input}..."):
-            paper = yf.Ticker(t_search)
-            info = paper.fast_info
-            if 'last_price' in info:
-                st.sidebar.success(f"{t_input}: ${info['last_price']:,.2f}")
-                st.sidebar.caption(f"Fuente: Yahoo Finance (Bolsa de Stgo)")
-            else:
-                # Intento alternativo por si fast_info falla
-                data = yf.download(t_search, period="1d", progress=False)
-                if not data.empty:
-                    st.sidebar.success(f"{t_input}: ${data['Close'].iloc[-1]:,.2f}")
-                else:
-                    st.sidebar.error("No se encontraron datos.")
+        # Usamos history en lugar de fast_info por estabilidad
+        ticker_obj = yf.Ticker(t_ready)
+        data_hist = ticker_obj.history(period="1d")
+        if not data_hist.empty:
+            precio_cierre = data_hist['Close'].iloc[-1]
+            st.sidebar.success(f"{t_input}: ${precio_cierre:,.2f}")
+            st.sidebar.caption(f"Precio de cierre (Bolsa de Stgo)")
+        else:
+            st.sidebar.warning(f"No hay datos para {t_input} hoy.")
     except:
-        st.sidebar.error("Error de conexión.")
+        st.sidebar.error("Error de conexión con Yahoo Finance.")
 
 st.sidebar.markdown("---")
-seleccion = st.sidebar.radio("Navegar por el Excel:", list(HOJAS.keys()))
+seleccion = st.sidebar.radio("Ir a la hoja:", list(HOJAS.keys()))
 
 try:
     url = BASE_URL + HOJAS[seleccion]
     df_raw = pd.read_csv(url, header=None)
 
     if seleccion == "Seguimiento Cartera":
-        st.title("🏛️ Performance de Cartera Activa")
+        st.title("🏛️ Performance de Cartera vs IPSA")
         
-        # 1. Obtener IPSA real hoy para comparar
-        ipsa = yf.download("^IPSA", period="2d", progress=False)['Close']
-        ret_ipsa = (ipsa.iloc[-1] / ipsa.iloc[-2]) - 1 if len(ipsa) > 1 else 0.0
+        # IPSA Real para Benchmarking
+        try:
+            ipsa_val = yf.download("^IPSA", period="2d", progress=False)['Close']
+            ret_ipsa = (ipsa_val.iloc[-1] / ipsa_val.iloc[-2]) - 1
+        except: ret_ipsa = 0.0
 
-        # 2. Filtrar datos manuales (Fila 6 en adelante)
+        # Limpiar datos del Excel (Fila 6 en adelante)
         df_clean = df_raw.iloc[5:].copy()
         df_clean = df_clean[df_clean[2].notna() & df_clean[2].astype(str).str.contains(r'\d')]
 
         if not df_clean.empty:
             ultima = df_clean.iloc[-1]
             
-            # Cálculo automático del patrimonio (Suma de P * Q de cada acción)
-            p_acciones = 0
-            for c in range(7, df_raw.shape[1], 3):
-                p_acciones += (limpiar_num(ultima[c]) * limpiar_num(ultima[c+1]))
+            # Cálculo de patrimonio dinámico (evita error 128)
+            valor_activos_total = 0
+            max_cols = df_raw.shape[1]
+            
+            # Procesamos solo donde haya nombres de acciones
+            for c in range(7, max_cols, 3):
+                if c + 1 >= max_cols: break # Seguridad para no salirse de la tabla
+                
+                nombre = str(df_raw.iloc[3, c]).strip().upper()
+                if nombre and "NAN" not in nombre and "UNNAMED" not in nombre:
+                    p = limpiar_num(ultima[c])
+                    q = limpiar_num(ultima[c+1])
+                    valor_activos_total += (p * q)
 
             caja = limpiar_num(ultima[5])
-            total_patrimonio = p_acciones + caja
+            patrimonio = valor_activos_total + caja
             
-            # --- MÉTRICAS DE IMPACTO ---
+            # --- MÉTRICAS ---
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Patrimonio Total", f"${total_patrimonio:,.0f}")
-            m2.metric("Benchmark IPSA (Hoy)", f"{ret_ipsa:+.2%}")
+            m1.metric("Patrimonio Total", f"${patrimonio:,.0f}")
+            m2.metric("IPSA Hoy", f"{ret_ipsa:+.2%}")
             m3.metric("Caja (Sobrante)", f"${caja:,.0f}")
-            m4.metric("Fecha de Hoy", datetime.now().strftime("%d/%m/%Y"))
+            m4.metric("Fecha Actual", datetime.now().strftime("%d/%m/%Y"))
 
             st.divider()
             
-            # --- HISTORIAL CARRETERO ---
-            st.subheader("📋 Registro Histórico de Investigación")
-            for col_idx in range(7, df_raw.shape[1], 3):
-                nombre = str(df_raw.iloc[3, col_idx]).strip().upper()
+            # --- HISTORIALES ---
+            for c in range(7, max_cols, 3):
+                if c + 1 >= max_cols: break
+                nombre = str(df_raw.iloc[3, c]).strip().upper()
                 if nombre and "NAN" not in nombre and "UNNAMED" not in nombre:
-                    h = df_clean[[2, 1, col_idx, col_idx + 1]].copy()
+                    h = df_clean[[2, 1, c, c+1]].copy()
                     h.columns = ["Fecha", "Periodo", "Precio", "Cantidad"]
                     h["Precio"] = h["Precio"].apply(limpiar_num)
                     h["Cantidad"] = h["Cantidad"].apply(limpiar_num)
-                    # Forzamos el cálculo de la columna Total
-                    h["Total ($)"] = h["Precio"] * h["Cantidad"]
+                    h["Monto ($)"] = h["Precio"] * h["Cantidad"]
                     h = h[h["Precio"] > 0]
 
                     with st.expander(f"📊 {nombre}"):
@@ -113,19 +117,14 @@ try:
 
     elif seleccion == "Omega":
         st.title("📉 Hoja Omega: Análisis de Riesgo")
-        # Rango Quirúrgico: B3 a H87
+        # Filtro estricto B3 a H87
         df_omega = df_raw.iloc[2:87, 1:8].copy()
-        df_omega.columns = df_omega.iloc[0] # Títulos de la fila B3
-        df_omega = df_omega.iloc[1:] # Datos desde B4
-        
-        # Limpieza de errores de Excel
-        df_omega = df_omega.replace("#VALUE!", "0").replace("#VALUE", "0")
-        
+        df_omega.columns = df_omega.iloc[0]
+        df_omega = df_omega.iloc[1:].replace("#VALUE!", "0").replace("#VALUE", "0")
         st.dataframe(df_omega, use_container_width=True, hide_index=True)
 
     else:
         st.title(f"📄 Hoja: {seleccion}")
-        # Limpieza genérica de #VALUE! para el resto de hojas
         st.dataframe(df_raw.iloc[2:].replace("#VALUE!", "0"), use_container_width=True)
 
 except Exception as e:
