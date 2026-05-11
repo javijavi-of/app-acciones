@@ -32,21 +32,25 @@ def limpiar_num(v):
 # --- BARRA LATERAL: HERRAMIENTAS ---
 st.sidebar.title("🛠️ Herramientas de Control")
 
-# 1. Buscador de Precios Real-Time
-with st.sidebar.expander("🔍 Buscador de Precios (Bolsa Stgo)", expanded=False):
-    t_input = st.text_input("Nemotécnico (ej: BCI, LTM):", "").upper().strip()
+# 1. Buscador de Precios Real-Time (CORREGIDO)
+with st.sidebar.expander("🔍 Buscador de Precios (Bolsa Stgo)", expanded=True):
+    t_input = st.text_input("Nemotécnico (ej: BCI, LTM, CHILE):", "").upper().strip()
     if t_input:
         t_search = t_input if ".SN" in t_input else f"{t_input}.SN"
         try:
-            data_busq = yf.download(t_search, period="1d", progress=False)
-            if not data_busq.empty:
-                st.success(f"{t_input}: ${data_busq['Close'].iloc[-1]:,.2f}")
-            else: st.error("No encontrado.")
-        except: st.error("Error de conexión.")
+            # Usamos Ticker().history para evitar errores de conexión comunes
+            stock = yf.Ticker(t_search)
+            hist = stock.history(period="1d")
+            if not hist.empty:
+                precio_cierre = hist['Close'].iloc[-1]
+                st.success(f"{t_input}: ${precio_cierre:,.2f}")
+            else:
+                st.error("No se encontraron datos para hoy.")
+        except:
+            st.error("Error de conexión con el mercado.")
 
-# 2. Calculadora para el Cierre de las 23:00 hrs
-with st.sidebar.expander("🧮 Calculadora de Montos", expanded=True):
-    st.write("Calcula el valor antes de pasarlo al Excel:")
+# 2. Calculadora para el Cierre
+with st.sidebar.expander("🧮 Calculadora de Montos", expanded=False):
     c_precio = st.number_input("Precio Cierre ($)", min_value=0.0, step=1.0)
     c_cant = st.number_input("Cantidad Acciones", min_value=0, step=1)
     st.info(f"**Monto Total:**\n${c_precio * c_cant:,.0f}")
@@ -61,71 +65,63 @@ try:
     if seleccion == "Seguimiento Cartera":
         st.title("🏛️ Terminal de Gestión Activa")
         
-        # Benchmarking IPSA
+        # Benchmarking IPSA Real
         try:
             ipsa = yf.download("^IPSA", period="2d", progress=False)['Close']
             ret_ipsa = (ipsa.iloc[-1] / ipsa.iloc[-2]) - 1
         except: ret_ipsa = 0.0
 
-        # Datos del Excel (Fila 6 en adelante)
+        # Datos del Excel (Fila 6 / índice 5 en adelante)
         df_clean = df_raw.iloc[5:].copy()
-        df_clean = df_clean[df_clean[2].notna()] # Filtro por fecha
+        df_clean = df_clean[df_clean[2].notna()] # Filtro por fecha en Columna C
 
-        # --- CÁLCULO PATRIMONIO TOTAL (Suma de cada acción día por día) ---
-        def calcular_patrimonio_dia(fila):
-            suma = 0
-            # Procesamos columnas de acciones (de 3 en 3) sin pasarnos del límite (Error 128 fix)
-            num_cols = len(fila)
-            for c in range(7, num_cols, 3):
-                if c+1 < num_cols:
-                    p = limpiar_num(fila[c])
-                    q = limpiar_num(fila[c+1])
-                    suma += (p * q)
-            return suma
-
-        df_clean['Valor_Acciones'] = df_clean.apply(calcular_patrimonio_dia, axis=1)
-        
-        # Datos de la última fila registrada
-        ultima = df_clean.iloc[-1]
-        caja = limpiar_num(ultima[5])
-        patrimonio_hoy = ultima['Valor_Acciones'] + caja
+        # --- OBTENCIÓN DE DATOS DIRECTOS DEL EXCEL (COLUMNA E) ---
+        # Columna E es índice 4. Columna F es índice 5.
+        ultima_fila = df_clean.iloc[-1]
+        valor_cartera_excel = limpiar_num(ultima_fila[4]) # Columna E (Valor de la Cartera)
+        caja_excel = limpiar_num(ultima_fila[5])         # Columna F (Sobrante)
+        patrimonio_total = valor_cartera_excel + caja_excel
 
         # --- MÉTRICAS PRINCIPALES ---
         m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Patrimonio Total (Cartera)", f"${patrimonio_hoy:,.0f}")
+        m1.metric("Valor Cartera (Acciones)", f"${valor_cartera_excel:,.0f}")
         m2.metric("Benchmark IPSA (Hoy)", f"{ret_ipsa:+.2%}")
-        m3.metric("Caja Sobrante", f"${caja:,.0f}")
+        m3.metric("Caja Sobrante", f"${caja_excel:,.0f}")
         m4.metric("Fecha Sistema", datetime.now().strftime("%d/%m/%Y"))
 
         st.divider()
 
-        # --- TABLA DE EVOLUCIÓN ---
-        st.subheader("📈 Evolución Diaria de la Cartera (Total Pesos)")
-        df_evol = df_clean[[2, 1, 'Valor_Acciones']].copy()
-        df_evol.columns = ["Fecha", "Periodo", "Inversión en Acciones ($)"]
+        # --- TABLA DE EVOLUCIÓN (DATOS DE COLUMNA E) ---
+        st.subheader("📈 Evolución Diaria del Valor Cartera (Excel)")
+        # Seleccionamos Fecha (2), Periodo (1) y Valor Cartera (4)
+        df_evol = df_clean[[2, 1, 4]].copy()
+        df_evol.columns = ["Fecha", "Periodo", "Valor Cartera ($)"]
+        # Limpiamos los datos de la columna para que se vean bien en la tabla
+        df_evol["Valor Cartera ($)"] = df_evol["Valor Cartera ($)"].apply(limpiar_num)
         st.dataframe(df_evol, use_container_width=True, hide_index=True)
 
         st.divider()
 
-        # --- DESPLEGABLES ---
-        st.subheader("📋 Detalle por Título")
+        # --- DESPLEGABLES POR TÍTULO ---
+        st.subheader("📋 Detalle Individual")
         max_c = df_raw.shape[1]
         for c_idx in range(7, max_c, 3):
-            if c_idx < max_c:
+            # Seguridad para evitar Error 128
+            if c_idx + 2 < max_c:
                 nombre = str(df_raw.iloc[3, c_idx]).strip().upper()
                 if nombre and "NAN" not in nombre and "UNNAMED" not in nombre:
-                    h = df_clean[[2, 1, c_idx, c_idx + 1]].copy()
-                    h.columns = ["Fecha", "Periodo", "Precio", "Cantidad"]
-                    h["Precio"] = h["Precio"].apply(limpiar_num)
-                    h["Cantidad"] = h["Cantidad"].apply(limpiar_num)
-                    h["Monto ($)"] = h["Precio"] * h["Cantidad"]
+                    h = df_clean[[2, 1, c_idx, c_idx + 1, c_idx + 2]].copy()
+                    h.columns = ["Fecha", "Periodo", "Precio", "Cantidad", "Monto ($)"]
+                    # Limpiamos formatos para visualización
+                    for col in ["Precio", "Cantidad", "Monto ($)"]:
+                        h[col] = h[col].apply(limpiar_num)
                     
                     with st.expander(f"🔹 {nombre}"):
                         st.dataframe(h[h["Precio"]>0], use_container_width=True, hide_index=True)
 
     elif seleccion == "Omega":
         st.title("📉 Hoja Omega: Análisis de Riesgo")
-        # Recorte exacto B3:H87 solicitado
+        # Filtro estricto B3 a H87
         df_omega = df_raw.iloc[2:87, 1:8].copy()
         df_omega.columns = df_omega.iloc[0]
         st.dataframe(df_omega.iloc[1:].replace("#VALUE!", "0"), use_container_width=True, hide_index=True)
