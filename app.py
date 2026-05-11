@@ -18,18 +18,20 @@ HOJAS = {
 }
 
 def limpiar_num(v):
-    """Convierte texto de Excel a número (maneja comas como miles)"""
+    """Convierte texto de Excel a número, eliminando comas conflictivas"""
     try:
         if pd.isna(v): return 0.0
-        s_val = str(v).strip().replace(',', '') # Quita comas para que Python sume
-        if s_val == "" or "#VALUE" in s_val.upper(): return 0.0
+        # Quita comas y espacios para que Python pueda hacer la matemática
+        s_val = str(v).strip().replace(',', '') 
+        if s_val == "" or "#VALUE" in s_val.upper() or "FECHA" in s_val.upper(): return 0.0
         return float(s_val)
     except:
         return 0.0
 
 def formato_excel(valor):
-    """Formato: 1,234,567.89"""
-    return "{:,.2f}".format(float(valor))
+    """Asegura que el valor esté limpio antes de darle formato 1,234,567.89"""
+    val_num = limpiar_num(valor) # <- ESTA ES LA MAGIA QUE ARREGLA EL ERROR
+    return "{:,.2f}".format(val_num)
 
 # --- BARRA LATERAL ---
 st.sidebar.title("🛠️ Herramientas de Control")
@@ -42,13 +44,13 @@ with st.sidebar.expander("🔍 Buscador de Precios", expanded=True):
             stock = yf.Ticker(t_search)
             hist = stock.history(period="1d")
             if not hist.empty:
-                st.success(f"{t_input}: {formato_excel(hist['Close'].iloc[-1])}")
+                st.success(f"{t_input}: ${formato_excel(hist['Close'].iloc[-1])}")
         except: st.sidebar.error("Error de conexión.")
 
 with st.sidebar.expander("🧮 Calculadora de Montos", expanded=False):
     c_precio = st.number_input("Precio ($)", min_value=0.0, step=1.0, format="%.2f")
     c_cant = st.number_input("Cantidad", min_value=0, step=1)
-    st.info(f"**Monto:**\n{formato_excel(c_precio * c_cant)}")
+    st.info(f"**Monto:**\n${formato_excel(c_precio * c_cant)}")
 
 st.sidebar.markdown("---")
 seleccion = st.sidebar.radio("Navegar por el Excel:", list(HOJAS.keys()))
@@ -72,14 +74,12 @@ try:
         df_clean = df_raw.iloc[5:].copy()
         df_clean = df_clean[df_clean[2].notna()] # Filas con fecha
 
-        # --- MOTOR DE CÁLCULO (LÓGICA E6) ---
+        # --- MOTOR DE CÁLCULO ---
         def calcular_patrimonio(fila):
             suma_acciones = 0
-            # Recorre de 3 en 3 (Precio x Cantidad) de cada título
             for c in range(7, len(fila), 3):
                 if c + 1 < len(fila):
                     suma_acciones += (limpiar_num(fila[c]) * limpiar_num(fila[c+1]))
-            # Suma Columnas F (5) y G (6)
             return suma_acciones + limpiar_num(fila[5]) + limpiar_num(fila[6])
 
         df_clean['Patrimonio_Total'] = df_clean.apply(calcular_patrimonio, axis=1)
@@ -88,11 +88,9 @@ try:
         df_con_dinero = df_clean[df_clean['Patrimonio_Total'] > 0]
 
         if not df_con_dinero.empty:
-            # Mostramos el dato más reciente (Cierre de Ayer / Último ingresado)
             ultimo_dato = df_con_dinero.iloc[-1]
             val_total = ultimo_dato['Patrimonio_Total']
             caja_f = limpiar_num(ultimo_dato[5])
-            fecha_excel = str(ultimo_dato[2])
 
             # --- MÉTRICAS SUPERIORES ---
             m1, m2, m3, m4 = st.columns(4)
@@ -105,37 +103,4 @@ try:
 
             # --- TABLA DE EVOLUCIÓN ---
             st.subheader("📈 Evolución Diaria del Patrimonio")
-            df_evol = df_clean[[2, 1, 'Patrimonio_Total']].copy()
-            df_evol.columns = ["Fecha", "Periodo", "Total Cartera ($)"]
-            df_evol["Total Cartera ($)"] = df_evol["Total Cartera ($)"].apply(formato_excel)
-            st.dataframe(df_evol, use_container_width=True, hide_index=True)
-
-            st.divider()
-
-            # --- DETALLE POR ACCIÓN ---
-            st.subheader("📋 Detalle de Títulos")
-            max_cols = df_raw.shape[1]
-            for c_idx in range(7, max_cols, 3):
-                if c_idx + 1 < max_cols:
-                    nombre = str(df_raw.iloc[3, c_idx]).strip().upper()
-                    if nombre and "NAN" not in nombre and "UNNAMED" not in nombre:
-                        h = df_clean[[2, 1, c_idx, c_idx + 1]].copy()
-                        h.columns = ["Fecha", "Periodo", "Precio", "Cantidad"]
-                        h["Monto ($)"] = h["Precio"].apply(limpiar_num) * h["Cantidad"].apply(limpiar_num)
-                        
-                        # Formato visual
-                        h_vista = h.copy()
-                        for col in ["Precio", "Cantidad", "Monto ($)"]:
-                            h_vista[col] = h_vista[col].apply(formato_excel)
-
-                        with st.expander(f"🔹 {nombre}"):
-                            st.dataframe(h_vista[h["Precio"].apply(limpiar_num) > 0], use_container_width=True, hide_index=True)
-        else:
-            st.warning("No se encontraron montos superiores a $0 en el Excel.")
-
-    else:
-        st.title(f"📄 Hoja: {seleccion}")
-        st.dataframe(df_raw.iloc[2:], use_container_width=True)
-
-except Exception as e:
-    st.error(f"Error detectado: {e}")
+            df_evol =
