@@ -18,11 +18,11 @@ HOJAS = {
 }
 
 def limpiar_num(v):
-    """Limpia datos: maneja comas como miles y puntos como decimales"""
+    """Limpia datos: coma para miles y punto para decimal"""
     try:
         s_val = str(v).strip().upper()
         if pd.isna(v) or s_val == "" or "#VALUE" in s_val: return 0.0
-        # Eliminamos la coma de miles para que Python lo procese
+        # Quitamos la coma (miles) para que Python pueda calcular
         s = s_val.replace(',', '')
         return float(s)
     except: return 0.0
@@ -45,7 +45,8 @@ with st.sidebar.expander("🔍 Buscador de Precios", expanded=True):
             hist = stock.history(period="1d")
             if not hist.empty:
                 st.success(f"{t_input}: {formato_excel(hist['Close'].iloc[-1])}")
-        except: st.sidebar.error("Error de conexión.")
+            else: st.error("Sin datos.")
+        except: st.error("Error de conexión.")
 
 with st.sidebar.expander("🧮 Calculadora de Montos", expanded=False):
     c_precio = st.number_input("Precio ($)", min_value=0.0, step=1.0, format="%.2f")
@@ -62,7 +63,7 @@ try:
     if seleccion == "Seguimiento Cartera":
         st.title("🏛️ Terminal de Gestión Activa")
         
-        # 1. IPSA en Vivo
+        # 1. Variación IPSA Real
         var_ipsa = 0.0
         try:
             ipsa_data = yf.download("^IPSA", period="2d", progress=False)['Close']
@@ -70,34 +71,37 @@ try:
                 var_ipsa = (ipsa_data.iloc[-1] / ipsa_data.iloc[-2]) - 1
         except: pass
 
-        # 2. Datos del Excel
+        # 2. Datos del Excel (Fila 6 en adelante)
         df_clean = df_raw.iloc[5:].copy()
-        df_clean = df_clean[df_clean[2].notna()] # Filtro de filas con fecha
+        df_clean = df_clean[df_clean[2].notna()] # Solo filas con fecha
 
-        # --- MOTOR DE CÁLCULO (LA LÓGICA QUE TE FUNCIONÓ) ---
+        # --- MOTOR DE CÁLCULO ---
         def auditor_cartera(fila):
             suma_acciones = 0
+            # Recorremos columnas de acciones (H=7 de 3 en 3)
+            # Python multiplica Precio * Cantidad de cada título
             for c in range(7, len(fila), 3):
                 if c + 1 < len(fila):
-                    suma_acciones += (limpiar_num(fila[c]) * limpiar_num(fila[c+1]))
-            # Suma F (5) y G (6)
+                    p = limpiar_num(fila[c])
+                    q = limpiar_num(fila[c+1])
+                    suma_acciones += (p * q)
+            # Sumamos las celdas F (5) y G (6) adicionales de tu fórmula
             return suma_acciones + limpiar_num(fila[5]) + limpiar_num(fila[6])
 
         df_clean['Patrimonio_Calculado'] = df_clean.apply(auditor_cartera, axis=1)
 
-        # 3. LÓGICA DE MÉTRICAS (DESFASE 1 DÍA)
-        if len(df_clean) >= 2:
-            # Tomamos la penúltima fila (ayer) para el valor de la métrica
-            # Si solo hay una fila, tomamos esa.
-            fila_metrica = df_clean.iloc[-2] if len(df_clean) > 1 else df_clean.iloc[-1]
+        # 3. LÓGICA DE MÉTRICAS (DESFASE DE 1 DÍA)
+        if len(df_clean) >= 1:
+            # Buscamos la fila de "ayer" (penúltima). Si solo hay una, tomamos la última.
+            fila_ayer = df_clean.iloc[-2] if len(df_clean) > 1 else df_clean.iloc[-1]
             
-            val_cartera_ayer = fila_metrica['Patrimonio_Calculado']
-            caja_ayer = limpiar_num(fila_metrica[5])
+            val_cartera_ayer = fila_ayer['Patrimonio_Calculado']
+            caja_ayer = limpiar_num(fila_ayer[5]) # Columna F
             
             # --- MÉTRICAS SUPERIORES ---
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Valor de Cartera (Cierre)", f"${formato_excel(val_cartera_ayer)}")
-            m2.metric("IPSA (Live)", f"{var_ipsa:+.2%}")
+            m1.metric("Valor Cartera (Cierre Ayer)", f"${formato_excel(val_cartera_ayer)}")
+            m2.metric("IPSA Hoy (Live)", f"{var_ipsa:+.2%}")
             m3.metric("Caja Sobrante (F)", f"${formato_excel(caja_ayer)}")
             m4.metric("Fecha de Hoy", datetime.now().strftime("%d/%m/%Y"))
 
@@ -112,6 +116,39 @@ try:
 
             st.divider()
 
-            # --- DETALLE POR ACCIÓN ---
+            # --- DETALLE POR ACCIÓN (Aquí corregimos el error de sangría) ---
             st.subheader("📋 Detalle de Títulos")
-            for c in range(7, df_raw.shape[1], 3):
+            max_cols = df_raw.shape[1]
+            for c_idx in range(7, max_cols, 3):
+                if c_idx + 1 < max_cols:
+                    nombre = str(df_raw.iloc[3, c_idx]).strip().upper()
+                    if nombre and "NAN" not in nombre and "UNNAMED" not in nombre:
+                        h = df_clean[[2, 1, c_idx, c_idx + 1]].copy()
+                        h.columns = ["Fecha", "Periodo", "Precio", "Cantidad"]
+                        
+                        # Cálculo matemático Precio x Cantidad
+                        h["Monto ($)"] = h["Precio"].apply(limpiar_num) * h["Cantidad"].apply(limpiar_num)
+                        
+                        # Formato visual
+                        h_vista = h.copy()
+                        for col in ["Precio", "Cantidad", "Monto ($)"]:
+                            h_vista[col] = h_vista[col].apply(formato_excel)
+
+                        with st.expander(f"🔹 {nombre}"):
+                            # Solo mostrar si hay datos
+                            st.dataframe(h_vista[h["Precio"].apply(limpiar_num) > 0], use_container_width=True, hide_index=True)
+        else:
+            st.info("Ingresa al menos una fila con datos en tu Excel.")
+
+    elif seleccion == "Omega":
+        st.title("📉 Hoja Omega")
+        df_omega = df_raw.iloc[2:87, 1:8].copy()
+        df_omega.columns = df_omega.iloc[0]
+        st.dataframe(df_omega.iloc[1:].replace("#VALUE!", "0"), use_container_width=True, hide_index=True)
+
+    else:
+        st.title(f"📄 Hoja: {seleccion}")
+        st.dataframe(df_raw.iloc[2:], use_container_width=True)
+
+except Exception as e:
+    st.error(f"Error detectado: {e}")
