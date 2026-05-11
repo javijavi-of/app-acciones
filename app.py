@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
+import yfinance as yf
+from datetime import datetime
 
 # --- CONFIGURACIÓN DE LA PÁGINA ---
-st.set_page_config(page_title="Terminal Financiera IPSA", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Terminal IPSA Pro", layout="wide")
 
-# Link Base y GIDs oficiales
 BASE_URL = "https://docs.google.com/spreadsheets/d/1IJmrcL8f6l3qIDW7gw4CjLRBRiFkCFN4KCQeKaQbPic/export?format=csv&gid="
 
 HOJAS = {
@@ -17,23 +18,32 @@ HOJAS = {
 }
 
 def limpiar_num(v):
-    """Limpia cualquier texto, signo o punto para dejar solo el número"""
     try:
-        if pd.isna(v) or str(v).strip() == "": return 0.0
-        # Quitamos todo lo que no sea número, coma o punto
+        if pd.isna(v) or str(v).strip() == "" or "#VALUE" in str(v): return 0.0
         s = "".join(c for c in str(v) if c.isdigit() or c in [',', '.'])
-        if not s: return 0.0
-        # Manejo de formato chileno: quitar puntos de mil, cambiar coma a punto decimal
-        if ',' in s and '.' in s:
-            s = s.replace('.', '').replace(',', '.')
-        elif ',' in s:
-            s = s.replace(',', '.')
+        if ',' in s and '.' in s: s = s.replace('.', '').replace(',', '.')
+        elif ',' in s: s = s.replace(',', '.')
         return float(s)
-    except:
-        return 0.0
+    except: return 0.0
 
-# --- NAVEGACIÓN ---
-st.sidebar.title("📊 Terminal Financiera")
+# --- BARRA LATERAL: BUSCADOR Y NAVEGACIÓN ---
+st.sidebar.title("🔍 Consultas y Navegación")
+
+# 1. Buscador de Nemotécnicos
+st.sidebar.subheader("Buscar Precio de Cierre")
+ticker_search = st.sidebar.text_input("Ingrese Nemotécnico (ej: BCI, COPEC):", "").upper()
+if ticker_search:
+    try:
+        data = yf.download(f"{ticker_search}.SN", period="1d", progress=False)
+        if not data.empty:
+            precio_actual = data['Close'].iloc[-1]
+            st.sidebar.success(f"Precio {ticker_search}: ${precio_actual:,.2f}")
+        else:
+            st.sidebar.error("No se encontró el ticker.")
+    except:
+        st.sidebar.error("Error en la búsqueda.")
+
+st.sidebar.markdown("---")
 seleccion = st.sidebar.radio("Ir a la hoja:", list(HOJAS.keys()))
 
 try:
@@ -41,64 +51,65 @@ try:
     df_raw = pd.read_csv(url, header=None)
 
     if seleccion == "Seguimiento Cartera":
-        st.title("🏛️ Seguimiento de Cartera vs IPSA")
+        st.title("🏛️ Performance de Cartera vs IPSA")
         
-        # Filtramos filas que tengan una fecha (Columna C / Índice 2)
+        # Obtener datos del IPSA Real
+        ipsa_data = yf.download("^IPSA", period="2d", progress=False)['Close']
+        ret_ipsa_hoy = (ipsa_data.iloc[-1] / ipsa_data.iloc[-2]) - 1
+
+        # Limpiar datos del Excel
         df_clean = df_raw.iloc[5:].copy()
         df_clean = df_clean[df_clean[2].notna() & df_clean[2].astype(str).str.contains(r'\d')]
 
         if not df_clean.empty:
-            # --- PROCESAMIENTO DE ACCIONES Y CÁLCULO DE TOTAL ---
-            st.subheader("📈 Evolución por Título")
-            
-            valor_total_cartera = 0
-            caja_sobrante = limpiar_num(df_clean.iloc[-1][5]) # Columna F
-            fecha_reporte = str(df_clean.iloc[-1][2])
+            # Cálculo de Valor Cartera (Sumando última posición de cada acción)
+            valor_activos = 0
+            for c in range(7, df_raw.shape[1], 3):
+                p = limpiar_num(df_clean.iloc[-1][c])
+                q = limpiar_num(df_clean.iloc[-1][c+1])
+                valor_activos += (p * q)
 
-            # Contenedor para los expanders
-            principales = ["ANDINAB", "BCI", "BSANTANDER", "CENCOMALLS", "MALLPLAZA", 
-                           "PARAUCO", "SALFACORP", "SQMB", "ECL", "ENELCHILE", 
-                           "ILC", "OROBLANCO", "ENELGXCH", "NORTEGRAN", "SQMA"]
+            caja = limpiar_num(df_clean.iloc[-1][5])
+            patrimonio_total = valor_activos + caja
             
-            tablas_acciones = []
+            # --- MÉTRICAS SUPERIORES ---
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Patrimonio Total", f"${patrimonio_total:,.0f}")
+            m2.metric("vs IPSA (Hoy)", f"{ret_ipsa_hoy:+.2%}", delta_color="normal")
+            m3.metric("Caja Disponible", f"${caja:,.0f}")
+            m4.metric("Fecha de Hoy", datetime.now().strftime("%d/%m/%Y"))
 
-            # Recorremos columnas de acciones (H en adelante, de 3 en 3)
+            st.divider()
+            
+            # --- DESPLEGABLES CON HISTORIAL ---
             for col_idx in range(7, df_raw.shape[1], 3):
                 nombre = str(df_raw.iloc[3, col_idx]).strip().upper()
                 if nombre and "NAN" not in nombre and "UNNAMED" not in nombre:
-                    # Crear historial
                     h = df_clean[[2, 1, col_idx, col_idx + 1]].copy()
                     h.columns = ["Fecha", "Periodo", "Precio", "Cantidad"]
                     h["Precio"] = h["Precio"].apply(limpiar_num)
                     h["Cantidad"] = h["Cantidad"].apply(limpiar_num)
-                    h["Total ($)"] = h["Precio"] * h["Cantidad"]
-                    
-                    # Sumamos al valor total de la cartera (solo el último dato registrado)
-                    valor_total_cartera += h["Total ($)"].iloc[-1]
-                    
-                    h = h[h["Precio"] > 0] # Solo mostrar días con datos
-                    tablas_acciones.append((nombre, h))
+                    h["Monto ($)"] = h["Precio"] * h["Cantidad"]
+                    h = h[h["Precio"] > 0]
 
-            # --- MÉTRICAS SUPERIORES ---
-            # Ahora las calculamos nosotros para que no fallen
-            m1, m2, m3 = st.columns(3)
-            m1.metric("Patrimonio en Acciones", f"${valor_total_cartera:,.0f}")
-            m2.metric("Caja (Sobrante)", f"${caja_sobrante:,.0f}")
-            m3.metric("Última Fecha", fecha_reporte)
+                    with st.expander(f"📊 {nombre}"):
+                        st.dataframe(h, use_container_width=True, hide_index=True)
 
-            st.divider()
-
-            # Mostrar Expanders
-            for nombre, tabla in tablas_acciones:
-                with st.expander(f"🔹 {nombre}"):
-                    st.dataframe(tabla, use_container_width=True, hide_index=True)
-        else:
-            st.warning("No se encontraron registros diarios. Asegúrate de poner la fecha en la Columna C.")
+    elif seleccion == "Omega":
+        st.title("📉 Hoja Omega (Análisis de Riesgo)")
+        # Rango B3 a H87 -> iloc[filas 2 a 87, columnas 1 a 8]
+        df_omega = df_raw.iloc[2:87, 1:8].copy()
+        df_omega.columns = df_raw.iloc[2, 1:8] # Títulos de la fila B3:H3
+        df_omega = df_omega.iloc[1:] # Quitar la fila de títulos duplicada
+        
+        # Limpiar #VALUE! por ceros para que se vea ordenado
+        df_omega = df_omega.replace("#VALUE!", "0").replace("#VALUE", "0")
+        
+        st.dataframe(df_omega, use_container_width=True, hide_index=True)
 
     else:
-        st.title(f"📑 Hoja: {seleccion}")
-        # Para las otras hojas, mostramos los datos desde donde empiezan los números
+        st.title(f"📄 Hoja: {seleccion}")
         st.dataframe(df_raw.iloc[2:], use_container_width=True)
 
 except Exception as e:
-    st.error(f"Error en la hoja '{seleccion}': {e}")
+    st.error(f"Error en la terminal: {e}")
