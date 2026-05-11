@@ -18,6 +18,7 @@ HOJAS = {
 }
 
 def limpiar_num(v):
+    """Limpia el formato del Excel (coma=miles, punto=decimal)"""
     try:
         if pd.isna(v): return 0.0
         s_val = str(v).strip().replace(',', '')
@@ -26,14 +27,13 @@ def limpiar_num(v):
     except: return 0.0
 
 def formato_excel(valor):
-    """Formato: 1,234,567.89"""
+    """Formato solicitado: 1,234,567.89"""
     try:
         return "{:,.2f}".format(float(valor))
-    except:
-        return "0.00"
+    except: return "0.00"
 
-# --- BARRA LATERAL ---
-st.sidebar.title("🛠️ Herramientas")
+# --- BARRA LATERAL: HERRAMIENTAS ---
+st.sidebar.title("🛠️ Herramientas de Control")
 
 with st.sidebar.expander("🔍 Buscador de Precios", expanded=True):
     t_input = st.text_input("Nemotécnico (ej: BCI, LTM):", "").upper().strip()
@@ -44,7 +44,7 @@ with st.sidebar.expander("🔍 Buscador de Precios", expanded=True):
             hist = stock.history(period="1d")
             if not hist.empty:
                 st.success(f"{t_input}: {formato_excel(hist['Close'].iloc[-1])}")
-        except: st.error("Error de conexión.")
+        except: st.sidebar.error("Error de conexión.")
 
 with st.sidebar.expander("🧮 Calculadora de Montos", expanded=False):
     c_precio = st.number_input("Precio ($)", min_value=0.0, step=1.0, format="%.2f")
@@ -52,7 +52,7 @@ with st.sidebar.expander("🧮 Calculadora de Montos", expanded=False):
     st.info(f"**Monto:**\n{formato_excel(c_precio * c_cant)}")
 
 st.sidebar.markdown("---")
-seleccion = st.sidebar.radio("Navegar:", list(HOJAS.keys()))
+seleccion = st.sidebar.radio("Hoja actual:", list(HOJAS.keys()))
 
 try:
     url = BASE_URL + HOJAS[seleccion]
@@ -61,7 +61,7 @@ try:
     if seleccion == "Seguimiento Cartera":
         st.title("🏛️ Terminal de Gestión Activa")
         
-        # 1. Variación IPSA Live
+        # 1. Variación IPSA Live (Mercado real)
         var_ipsa = 0.0
         try:
             ipsa_hist = yf.download("^IPSA", period="2d", progress=False)['Close']
@@ -69,11 +69,10 @@ try:
                 var_ipsa = (ipsa_hist.iloc[-1] / ipsa_hist.iloc[-2]) - 1
         except: pass
 
-        # 2. Procesar Datos y Filtrar Fechas
+        # 2. Procesar Datos del Excel
         df_clean = df_raw.iloc[5:].copy()
         df_clean[2] = pd.to_datetime(df_clean[2], dayfirst=True, errors='coerce')
-        # Eliminamos filas sin fecha válida
-        df_clean = df_clean.dropna(subset=[2])
+        df_clean = df_clean.dropna(subset=[2]) # Solo filas con fecha
         
         # --- LÓGICA DE CÁLCULO ---
         def auditor_cartera(fila):
@@ -81,36 +80,33 @@ try:
             for c in range(7, len(fila), 3):
                 if c + 1 < len(fila):
                     suma_acciones += (limpiar_num(fila[c]) * limpiar_num(fila[c+1]))
+            # Suma F (5) y G (6)
             return suma_acciones + limpiar_num(fila[5]) + limpiar_num(fila[6])
 
         df_clean['Patrimonio_Calculado'] = df_clean.apply(auditor_cartera, axis=1)
 
-        # 3. IDENTIFICAR DATO DE "AYER" O EL MÁS RECIENTE
+        # 3. IDENTIFICAR DATO "HASTA AYER"
         hoy = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
-        # Solo tomamos datos que sean menores o iguales a hoy
+        # Tomamos datos anteriores o iguales a hoy
         df_historico = df_clean[df_clean[2] <= hoy].sort_values(by=2)
 
         if not df_historico.empty:
-            # Buscamos la fila más cercana a "Ayer" (o la última disponible antes de hoy)
+            # La última fila disponible antes o igual a hoy (ej. el 10 de mayo si hoy es 11)
             ultima_valida = df_historico.iloc[-1]
             val_cartera = ultima_valida['Patrimonio_Calculado']
             caja_f = limpiar_num(ultima_valida[5])
             
             # --- MÉTRICAS SUPERIORES ---
             m1, m2, m3, m4 = st.columns(4)
-            # Valor de cartera (Último cierre disponible)
             m1.metric("Valor de Cartera", f"${formato_excel(val_cartera)}")
-            # Variación IPSA en vivo
             m2.metric("Variación IPSA (Live)", f"{var_ipsa:+.2%}")
-            # Caja de la última fecha registrada
             m3.metric("Caja Sobrante (F)", f"${formato_excel(caja_f)}")
-            # Fecha de HOY
             m4.metric("Fecha de Hoy", hoy.strftime("%d/%m/%Y"))
 
             st.divider()
 
             # --- TABLA DE EVOLUCIÓN ---
-            st.subheader("📈 Evolución del Patrimonio (Hasta hoy)")
+            st.subheader("📈 Evolución del Patrimonio (Sumatoria Diaria)")
             df_evol = df_historico[[2, 1, 'Patrimonio_Calculado']].copy()
             df_evol.columns = ["Fecha", "Periodo", "Total Cartera ($)"]
             df_evol["Fecha"] = df_evol["Fecha"].dt.strftime('%d/%m/%Y')
@@ -118,11 +114,30 @@ try:
             st.dataframe(df_evol, use_container_width=True, hide_index=True)
 
             # --- DETALLE POR ACCIÓN ---
-            st.subheader("📋 Detalle de Títulos")
+            st.subheader("📋 Detalle de Títulos (Precio x Cantidad)")
             for c in range(7, df_raw.shape[1], 3):
                 if c + 1 < df_raw.shape[1]:
                     nombre = str(df_raw.iloc[3, c]).strip().upper()
                     if nombre and "NAN" not in nombre and "UNNAMED" not in nombre:
                         h = df_historico[[2, 1, c, c+1]].copy()
                         h.columns = ["Fecha", "Periodo", "Precio", "Cantidad"]
-                        h["Monto ($)"] = h["Precio"].apply(limpiar_num) *
+                        # Cálculo de monto por día
+                        h["Monto ($)"] = h["Precio"].apply(limpiar_num) * h["Cantidad"].apply(limpiar_num)
+                        
+                        # Formato visual
+                        h_vista = h.copy()
+                        h_vista["Fecha"] = h_vista["Fecha"].dt.strftime('%d/%m/%Y')
+                        for col in ["Precio", "Cantidad", "Monto ($)"]:
+                            h_vista[col] = h_vista[col].apply(formato_excel)
+
+                        with st.expander(f"🔹 {nombre}"):
+                            st.dataframe(h_vista[h["Precio"].apply(limpiar_num) > 0], use_container_width=True, hide_index=True)
+        else:
+            st.warning("No hay datos registrados previos a hoy.")
+
+    else:
+        st.title(f"📄 Hoja: {seleccion}")
+        st.dataframe(df_raw.iloc[2:], use_container_width=True)
+
+except Exception as e:
+    st.error(f"Error detectado: {e}")
