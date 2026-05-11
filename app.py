@@ -18,10 +18,9 @@ HOJAS = {
 }
 
 def limpiar_num(v):
-    """Convierte texto de Excel a número, eliminando comas conflictivas"""
+    """Convierte texto a número, eliminando comas conflictivas"""
     try:
         if pd.isna(v): return 0.0
-        # Quita comas y espacios para que Python pueda hacer la matemática
         s_val = str(v).strip().replace(',', '') 
         if s_val == "" or "#VALUE" in s_val.upper() or "FECHA" in s_val.upper(): return 0.0
         return float(s_val)
@@ -29,7 +28,7 @@ def limpiar_num(v):
         return 0.0
 
 def formato_excel(valor):
-    """Asegura que el valor esté limpio antes de darle formato 1,234,567.89"""
+    """Asegura formato 1,234,567.89"""
     val_num = limpiar_num(valor)
     return "{:,.2f}".format(val_num)
 
@@ -70,11 +69,18 @@ try:
                 var_ipsa = (ipsa_data.iloc[-1] / ipsa_data.iloc[-2]) - 1
         except: pass
 
-        # 2. Limpieza de datos
+        # 2. Limpieza de datos básica
         df_clean = df_raw.iloc[5:].copy()
         df_clean = df_clean[df_clean[2].notna()] # Filas con fecha
 
-        # --- MOTOR DE CÁLCULO ---
+        # --- EDITOR EN VIVO ---
+        st.subheader("📝 Simulador de Cierre Diario")
+        st.info("Haz doble clic en cualquier celda para modificar precios o cantidades. **Los cálculos de arriba se actualizarán automáticamente.** (Luego copia tus totales a tu Excel).")
+        
+        # Mostramos la tabla para que la edites (las columnas 2 es Fecha, 1 es Periodo)
+        df_editado = st.data_editor(df_clean, hide_index=True, use_container_width=True)
+
+        # --- MOTOR DE CÁLCULO SOBRE LOS DATOS EDITADOS ---
         def calcular_patrimonio(fila):
             suma_acciones = 0
             for c in range(7, len(fila), 3):
@@ -82,50 +88,39 @@ try:
                     suma_acciones += (limpiar_num(fila[c]) * limpiar_num(fila[c+1]))
             return suma_acciones + limpiar_num(fila[5]) + limpiar_num(fila[6])
 
-        df_clean['Patrimonio_Total'] = df_clean.apply(calcular_patrimonio, axis=1)
-
-        # 3. FILTRAR PARA MÉTRICAS (Buscamos la última fila con dinero real)
-        df_con_dinero = df_clean[df_clean['Patrimonio_Total'] > 0]
+        # Aplicamos la matemática a la tabla editada
+        df_editado['Patrimonio_Total'] = df_editado.apply(calcular_patrimonio, axis=1)
+        df_con_dinero = df_editado[df_editado['Patrimonio_Total'] > 0]
 
         if not df_con_dinero.empty:
             ultimo_dato = df_con_dinero.iloc[-1]
             val_total = ultimo_dato['Patrimonio_Total']
             caja_f = limpiar_num(ultimo_dato[5])
 
-            # --- MÉTRICAS SUPERIORES ---
+            # --- MÉTRICAS SUPERIORES DINÁMICAS ---
+            st.divider()
             m1, m2, m3, m4 = st.columns(4)
-            m1.metric("Valor Total Cartera", f"${formato_excel(val_total)}")
+            m1.metric("Valor Total Cartera (Calculado)", f"${formato_excel(val_total)}")
             m2.metric("Variación IPSA (Live)", f"{var_ipsa:+.2%}")
             m3.metric("Caja Sobrante (F)", f"${formato_excel(caja_f)}")
             m4.metric("Fecha de Hoy", datetime.now().strftime("%d/%m/%Y"))
 
             st.divider()
 
-            # --- TABLA DE EVOLUCIÓN ---
-            st.subheader("📈 Evolución Diaria del Patrimonio")
-            df_evol = df_clean[[2, 1, 'Patrimonio_Total']].copy()
-            df_evol.columns = ["Fecha", "Periodo", "Total Cartera ($)"]
-            df_evol["Total Cartera ($)"] = df_evol["Total Cartera ($)"].apply(formato_excel)
-            st.dataframe(df_evol, use_container_width=True, hide_index=True)
-
-            st.divider()
-
-            # --- DETALLE POR ACCIÓN ---
-            st.subheader("📋 Detalle de Títulos")
+            # --- DETALLE POR ACCIÓN (Basado en lo que edites) ---
+            st.subheader("📋 Detalle de Títulos (Actualizado en Vivo)")
             max_cols = df_raw.shape[1]
             for c_idx in range(7, max_cols, 3):
                 if c_idx + 1 < max_cols:
                     nombre = str(df_raw.iloc[3, c_idx]).strip().upper()
                     if nombre and "NAN" not in nombre and "UNNAMED" not in nombre:
-                        h = df_clean[[2, 1, c_idx, c_idx + 1]].copy()
+                        h = df_editado[[2, 1, c_idx, c_idx + 1]].copy()
                         h.columns = ["Fecha", "Periodo", "Precio", "Cantidad"]
                         
-                        # Convertimos a número puro primero para hacer el cálculo seguro
                         h["Precio_Num"] = h["Precio"].apply(limpiar_num)
                         h["Cantidad_Num"] = h["Cantidad"].apply(limpiar_num)
                         h["Monto ($)"] = h["Precio_Num"] * h["Cantidad_Num"]
                         
-                        # Creamos la vista final aplicando el formato
                         h_vista = h[["Fecha", "Periodo", "Precio_Num", "Cantidad_Num", "Monto ($)"]].copy()
                         h_vista.columns = ["Fecha", "Periodo", "Precio", "Cantidad", "Monto ($)"]
                         
@@ -133,7 +128,6 @@ try:
                             h_vista[col] = h_vista[col].apply(formato_excel)
 
                         with st.expander(f"🔹 {nombre}"):
-                            # Mostramos solo donde efectivamente haya habido un precio ingresado
                             st.dataframe(h_vista[h["Precio_Num"] > 0], use_container_width=True, hide_index=True)
         else:
             st.warning("No se encontraron montos superiores a $0 en el Excel.")
