@@ -30,7 +30,7 @@ def limpiar_num(v):
 
 def formato_excel(valor):
     """Asegura que el valor esté limpio antes de darle formato 1,234,567.89"""
-    val_num = limpiar_num(valor) # <- ESTA ES LA MAGIA QUE ARREGLA EL ERROR
+    val_num = limpiar_num(valor)
     return "{:,.2f}".format(val_num)
 
 # --- BARRA LATERAL ---
@@ -103,4 +103,50 @@ try:
 
             # --- TABLA DE EVOLUCIÓN ---
             st.subheader("📈 Evolución Diaria del Patrimonio")
-            df_evol =
+            df_evol = df_clean[[2, 1, 'Patrimonio_Total']].copy()
+            df_evol.columns = ["Fecha", "Periodo", "Total Cartera ($)"]
+            df_evol["Total Cartera ($)"] = df_evol["Total Cartera ($)"].apply(formato_excel)
+            st.dataframe(df_evol, use_container_width=True, hide_index=True)
+
+            st.divider()
+
+            # --- DETALLE POR ACCIÓN ---
+            st.subheader("📋 Detalle de Títulos")
+            max_cols = df_raw.shape[1]
+            for c_idx in range(7, max_cols, 3):
+                if c_idx + 1 < max_cols:
+                    nombre = str(df_raw.iloc[3, c_idx]).strip().upper()
+                    if nombre and "NAN" not in nombre and "UNNAMED" not in nombre:
+                        h = df_clean[[2, 1, c_idx, c_idx + 1]].copy()
+                        h.columns = ["Fecha", "Periodo", "Precio", "Cantidad"]
+                        
+                        # Convertimos a número puro primero para hacer el cálculo seguro
+                        h["Precio_Num"] = h["Precio"].apply(limpiar_num)
+                        h["Cantidad_Num"] = h["Cantidad"].apply(limpiar_num)
+                        h["Monto ($)"] = h["Precio_Num"] * h["Cantidad_Num"]
+                        
+                        # Creamos la vista final aplicando el formato
+                        h_vista = h[["Fecha", "Periodo", "Precio_Num", "Cantidad_Num", "Monto ($)"]].copy()
+                        h_vista.columns = ["Fecha", "Periodo", "Precio", "Cantidad", "Monto ($)"]
+                        
+                        for col in ["Precio", "Cantidad", "Monto ($)"]:
+                            h_vista[col] = h_vista[col].apply(formato_excel)
+
+                        with st.expander(f"🔹 {nombre}"):
+                            # Mostramos solo donde efectivamente haya habido un precio ingresado
+                            st.dataframe(h_vista[h["Precio_Num"] > 0], use_container_width=True, hide_index=True)
+        else:
+            st.warning("No se encontraron montos superiores a $0 en el Excel.")
+
+    elif seleccion == "Omega":
+        st.title("📉 Hoja Omega")
+        df_omega = df_raw.iloc[2:87, 1:8].copy()
+        df_omega.columns = df_omega.iloc[0]
+        st.dataframe(df_omega.iloc[1:].replace("#VALUE!", "0"), use_container_width=True, hide_index=True)
+
+    else:
+        st.title(f"📄 Hoja: {seleccion}")
+        st.dataframe(df_raw.iloc[2:], use_container_width=True)
+
+except Exception as e:
+    st.error(f"Error detectado: {e}")
