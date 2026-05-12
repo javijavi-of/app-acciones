@@ -5,253 +5,200 @@ from datetime import datetime, timedelta
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# --- CONFIGURACIÓN DE LA PÁGINA ---
-st.set_page_config(page_title="Terminal Financiera Pro", layout="wide", page_icon="📈")
+# --- CONFIGURACIÓN ---
+st.set_page_config(page_title="Terminal Financiera Pro", layout="wide", page_icon="🏦")
 
-# --- INICIALIZAR BASE DE DATOS LOCAL (SESSION STATE) ---
+# --- INICIALIZACIÓN DE ESTADOS ---
 if 'cartera' not in st.session_state:
-    # Creamos un DataFrame vacío con las columnas solicitadas
-    st.session_state.cartera = pd.DataFrame(columns=[
-        "Fecha_Compra", "Ticker", "Bolsa", "Moneda", "Precio_Compra", "Cantidad", "Monto_Invertido_CLP"
-    ])
+    st.session_state.cartera = pd.DataFrame(columns=["Fecha_Compra", "Ticker", "Bolsa", "Precio_Compra", "Cantidad", "Monto_CLP"])
+if 'favoritas' not in st.session_state:
+    st.session_state.favoritas = pd.DataFrame(columns=["Fecha_Reg", "Ticker", "Bolsa", "Precio_Ref"])
 
-def formato_peso(valor):
-    return f"${valor:,.0f}".replace(",", "v").replace(".", ",").replace("v", ".")
+# --- FUNCIONES DE AYUDA ---
+def formato_clp(valor):
+    return f"${valor:,.0f}".replace(",", ".")
 
-def formato_usd(valor):
-    return f"US${valor:,.2f}"
+def obtener_precio_cierre(ticker, fecha):
+    try:
+        stock = yf.Ticker(ticker)
+        # Buscamos un rango pequeño alrededor de la fecha por si es festivo
+        start = fecha
+        end = fecha + timedelta(days=4)
+        hist = stock.history(start=start, end=end)
+        if not hist.empty:
+            return hist['Close'].iloc[0], stock.info.get('exchange', 'N/A')
+        return None, None
+    except:
+        return None, None
 
-# Función para calcular RSI y MACD puros en Pandas
-def calcular_indicadores(df, sma_w, ema_w, rsi_w, macd_fast, macd_slow, macd_sig):
-    # SMA y EMA
-    df[f'SMA_{sma_w}'] = df['Close'].rolling(window=sma_w).mean()
-    df[f'EMA_{ema_w}'] = df['Close'].ewm(span=ema_w, adjust=False).mean()
-    
-    # RSI
+def calcular_indicadores(df, sma_p, ema_p, rsi_p, m_f, m_s, m_sig):
+    df['SMA'] = df['Close'].rolling(window=sma_p).mean()
+    df['EMA'] = df['Close'].ewm(span=ema_p, adjust=False).mean()
     delta = df['Close'].diff()
-    gain = delta.where(delta > 0, 0).ewm(alpha=1/rsi_w, adjust=False).mean()
-    loss = -delta.where(delta < 0, 0).ewm(alpha=1/rsi_w, adjust=False).mean()
+    gain = (delta.where(delta > 0, 0)).rolling(window=rsi_p).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_p).mean()
     rs = gain / loss
     df['RSI'] = 100 - (100 / (1 + rs))
-    
-    # MACD
-    ema_f = df['Close'].ewm(span=macd_fast, adjust=False).mean()
-    ema_s = df['Close'].ewm(span=macd_slow, adjust=False).mean()
-    df['MACD'] = ema_f - ema_s
-    df['Signal'] = df['MACD'].ewm(span=macd_sig, adjust=False).mean()
-    df['Histograma'] = df['MACD'] - df['Signal']
-    
+    exp1 = df['Close'].ewm(span=m_f, adjust=False).mean()
+    exp2 = df['Close'].ewm(span=m_s, adjust=False).mean()
+    df['MACD'] = exp1 - exp2
+    df['Signal'] = df['MACD'].ewm(span=m_sig, adjust=False).mean()
     return df
 
-# Extraer Dólar Observado (USD/CLP)
-@st.cache_data(ttl=3600)
-def obtener_usd_clp():
-    try:
-        usd = yf.Ticker("CLP=X").history(period="1d")
-        return usd['Close'].iloc[-1]
-    except:
-        return 900.0 # Valor por defecto en caso de error
-
-usd_clp_actual = obtener_usd_clp()
-
-# --- INTERFAZ PRINCIPAL CON PESTAÑAS ---
-st.title("🏛️ Terminal de Gestión Activa Independiente")
-tab1, tab2, tab3 = st.tabs(["🏠 Home (Dashboard)", "💼 Mi Cartera", "📈 Análisis Técnico y Señales"])
+# --- INTERFAZ ---
+st.title("🏛️ Terminal Financiera: Control Total")
+tabs = st.tabs(["🏠 Home / Dashboard", "💼 Mi Cartera", "⭐ Acciones Favoritas", "📊 Análisis Técnico"])
 
 # ==========================================
-# PESTAÑA 1: HOME (DASHBOARD)
+# TAB 1: HOME (DASHBOARD EN VIVO)
 # ==========================================
-with tab1:
-    st.header("Resumen General del Portafolio")
+with tabs[0]:
+    st.header("Monitor de Mercado en Vivo")
     
-    df_port = st.session_state.cartera
-    total_invertido = df_port['Monto_Invertido_CLP'].sum() if not df_port.empty else 0
+    # Dólar y métricas
+    usd_val = yf.Ticker("CLP=X").history(period="1d")['Close'].iloc[-1]
+    col_m1, col_m2 = st.columns(2)
+    col_m1.metric("Dólar Observado", f"${usd_val:,.2f} CLP")
     
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Valor Total Invertido (CLP)", formato_peso(total_invertido))
-    col2.metric("Dólar Observado (USD/CLP)", formato_peso(usd_clp_actual))
-    col3.metric("Activos en Cartera", len(df_port) if not df_port.empty else 0)
-    
+    total_cartera = st.session_state.cartera['Monto_CLP'].sum() if not st.session_state.cartera.empty else 0
+    col_m2.metric("Valor Total Cartera", formato_clp(total_cartera))
+
     st.divider()
-    if not df_port.empty:
-        st.subheader("Distribución de tu Cartera")
-        # Gráfico de torta simple
-        dist = df_port.groupby("Ticker")["Monto_Invertido_CLP"].sum().reset_index()
-        fig_pie = go.Figure(data=[go.Pie(labels=dist['Ticker'], values=dist['Monto_Invertido_CLP'], hole=.4)])
-        fig_pie.update_layout(height=400, margin=dict(t=0, b=0, l=0, r=0))
-        st.plotly_chart(fig_pie, use_container_width=True)
-    else:
-        st.info("Tu cartera está vacía. Ve a la pestaña 'Mi Cartera' para agregar activos.")
-
-# ==========================================
-# PESTAÑA 2: MI CARTERA (Gestión)
-# ==========================================
-with tab2:
-    st.header("Gestión de Mi Cartera")
     
-    with st.expander("➕ Agregar Nueva Acción (Buscador y Calendario)", expanded=True):
-        col_busq, col_fecha, col_calc = st.columns(3)
+    # Monitor de Acciones (Cartera + Favoritas)
+    tickers_interes = list(set(st.session_state.cartera['Ticker'].tolist() + st.session_state.favoritas['Ticker'].tolist()))
+    
+    if tickers_interes:
+        st.subheader("⚡ Seguimiento de Precios en Tiempo Real")
+        # Descargamos precios actuales
+        data_live = yf.download(tickers_interes, period="2d", progress=False)['Close']
         
-        with col_busq:
-            ticker_input = st.text_input("1. Nemotécnico (ej: ANDINAB.SN, AAPL):").upper().strip()
-            
-        with col_fecha:
-            fecha_adq = st.date_input("2. Fecha de Adquisición:", datetime.now())
-            
-        with col_calc:
-            st.write("3. Consultar Mercado")
-            btn_buscar = st.button("🔍 Buscar Precio Histórico")
-
-        # Memoria temporal para el precio buscado
-        if btn_buscar and ticker_input:
+        cols_live = st.columns(len(tickers_interes) if len(tickers_interes) < 5 else 4)
+        for i, t in enumerate(tickers_interes):
             try:
-                stock = yf.Ticker(ticker_input)
-                info = stock.info
-                bolsa = info.get("exchange", "Desconocida")
-                moneda = info.get("currency", "CLP")
-                
-                # Buscar datos históricos
-                start_date = fecha_adq - timedelta(days=3) # Margen por si es fin de semana
-                end_date = fecha_adq + timedelta(days=1)
-                hist = stock.history(start=start_date, end=end_date)
-                
-                if not hist.empty:
-                    # Tomar el precio más cercano a la fecha solicitada
-                    precio_historico = hist['Close'].iloc[-1]
-                    st.session_state['temp_ticker'] = ticker_input
-                    st.session_state['temp_precio'] = precio_historico
-                    st.session_state['temp_bolsa'] = bolsa
-                    st.session_state['temp_moneda'] = moneda
-                    st.success(f"¡Precio encontrado! Bolsa: {bolsa} | Moneda: {moneda}")
+                # Corregimos el acceso a los datos de yfinance
+                if len(tickers_interes) == 1:
+                    ultimo_p = data_live.iloc[-1]
+                    prev_p = data_live.iloc[-2]
                 else:
-                    st.error("No hay datos para esa fecha. Quizás el mercado estaba cerrado.")
-            except Exception as e:
-                st.error("Error al buscar el Ticker. Asegúrate de usar .SN para Chile.")
+                    ultimo_p = data_live[t].iloc[-1]
+                    prev_p = data_live[t].iloc[-2]
                 
-        # Si ya buscamos el precio, mostramos la calculadora
-        if 'temp_precio' in st.session_state and st.session_state['temp_ticker'] == ticker_input:
-            st.divider()
-            st.write(f"### Precio de {ticker_input} al {fecha_adq.strftime('%d/%m/%Y')}: **{st.session_state['temp_precio']:,.2f} {st.session_state['temp_moneda']}**")
-            
-            c_cant = st.number_input("4. Ingresa la Cantidad de Acciones compradas:", min_value=1, step=1)
-            
-            # Cálculo de monto en su moneda
-            monto_original = st.session_state['temp_precio'] * c_cant
-            
-            # Conversión a CLP si es necesario
-            monto_clp = monto_original
-            if st.session_state['temp_moneda'] == "USD":
-                monto_clp = monto_original * usd_clp_actual
-                st.info(f"Monto Original: US${monto_original:,.2f} ➡️ **Total CLP: {formato_peso(monto_clp)}**")
-            else:
-                st.info(f"**Monto Total CLP: {formato_peso(monto_clp)}**")
+                var_pct = ((ultimo_p - prev_p) / prev_p) * 100
+                flecha = "🔼" if var_pct > 0 else "🔽"
                 
-            if st.button("💾 Guardar en Mi Cartera"):
-                nueva_fila = {
-                    "Fecha_Compra": fecha_adq.strftime('%d/%m/%Y'),
-                    "Ticker": ticker_input,
-                    "Bolsa": st.session_state['temp_bolsa'],
-                    "Moneda": st.session_state['temp_moneda'],
-                    "Precio_Compra": st.session_state['temp_precio'],
-                    "Cantidad": c_cant,
-                    "Monto_Invertido_CLP": monto_clp
-                }
-                st.session_state.cartera = pd.concat([st.session_state.cartera, pd.DataFrame([nueva_fila])], ignore_index=True)
-                st.success("¡Acción agregada a tu cartera exitosamente!")
-                # Limpiar memoria temporal
-                del st.session_state['temp_precio']
+                with cols_live[i % 4]:
+                    st.metric(f"{t}", f"{ultimo_p:,.2f}", f"{var_pct:.2f}% {flecha}")
+            except:
+                continue
+    else:
+        st.info("Agrega acciones en 'Mi Cartera' o 'Favoritas' para ver el monitor en vivo.")
 
-    st.divider()
-    st.subheader("📋 Tu Base de Datos: Valor Diario de Cartera")
-    if not st.session_state.cartera.empty:
-        df_mostrar = st.session_state.cartera.copy()
-        df_mostrar['Precio_Compra'] = df_mostrar['Precio_Compra'].apply(lambda x: f"{x:,.2f}")
-        df_mostrar['Monto_Invertido_CLP'] = df_mostrar['Monto_Invertido_CLP'].apply(formato_peso)
-        st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
+# ==========================================
+# TAB 2: MI CARTERA
+# ==========================================
+with tabs[1]:
+    st.header("Gestión de Activos")
+    with st.expander("➕ Registrar Compra (Histórica o Actual)"):
+        c1, c2, c3 = st.columns(3)
+        t_compra = c1.text_input("Ticker (ej: CHILE.SN, TSLA):").upper()
+        f_compra = c2.date_input("Fecha de Compra:", datetime.now())
+        cant = c3.number_input("Cantidad:", min_value=1)
         
-        if st.button("🗑️ Borrar toda la Cartera"):
-            st.session_state.cartera = pd.DataFrame(columns=["Fecha_Compra", "Ticker", "Bolsa", "Moneda", "Precio_Compra", "Cantidad", "Monto_Invertido_CLP"])
-            st.rerun()
+        if st.button("Validar y Agregar a Cartera"):
+            p_cierre, bolsa = obtener_precio_cierre(t_compra, f_compra)
+            if p_cierre:
+                monto = p_cierre * cant
+                # Simulación conversión si es dólar
+                if bolsa != "SGO": monto *= usd_val 
+                
+                nueva = pd.DataFrame([{
+                    "Fecha_Compra": f_compra.strftime("%d/%m/%Y"),
+                    "Ticker": t_compra, "Bolsa": bolsa,
+                    "Precio_Compra": p_cierre, "Cantidad": cant, "Monto_CLP": monto
+                }])
+                st.session_state.cartera = pd.concat([st.session_state.cartera, nueva], ignore_index=True)
+                st.success(f"Agregado: {t_compra} a {p_cierre:,.2f}")
+            else:
+                st.error("No se encontró precio para esa fecha.")
+
+    st.dataframe(st.session_state.cartera, use_container_width=True)
 
 # ==========================================
-# PESTAÑA 3: ANÁLISIS TÉCNICO AVANZADO
+# TAB 3: ACCIONES FAVORITAS
 # ==========================================
-with tab3:
-    st.header("Análisis Técnico y Señales (Gráficos Profesionales)")
+with tabs[2]:
+    st.header("Lista de Seguimiento (Watchlist)")
+    with st.form("fav_form"):
+        f1, f2 = st.columns(2)
+        t_fav = f1.text_input("Ticker Favorito:").upper()
+        fecha_fav = f2.date_input("Fecha de Referencia:", datetime.now())
+        if st.form_submit_button("Añadir a Favoritos"):
+            p_fav, bolsa_f = obtener_precio_cierre(t_fav, fecha_fav)
+            if p_fav:
+                nueva_f = pd.DataFrame([{
+                    "Fecha_Reg": fecha_fav.strftime("%d/%m/%Y"),
+                    "Ticker": t_fav, "Bolsa": bolsa_f, "Precio_Ref": p_fav
+                }])
+                st.session_state.favoritas = pd.concat([st.session_state.favoritas, nueva_f], ignore_index=True)
+            else:
+                st.error("Error al obtener datos.")
     
-    analisis_ticker = st.text_input("Ingresa el Ticker a analizar (ej: SQM-B.SN, MSFT):", "CHILE.SN").upper()
+    st.dataframe(st.session_state.favoritas, use_container_width=True)
+
+# ==========================================
+# TAB 4: ANÁLISIS TÉCNICO
+# ==========================================
+with tabs[3]:
+    st.header("Centro de Análisis Avanzado")
     
-    with st.expander("⚙️ Configurar Parámetros de Indicadores", expanded=False):
-        c1, c2, c3, c4 = st.columns(4)
-        sma_p = c1.number_input("SMA (Simple)", 20, 200, 50)
-        ema_p = c2.number_input("EMA (Exponencial)", 9, 100, 20)
-        rsi_p = c3.number_input("Período RSI", 7, 30, 14)
-        c4.write("MACD")
-        macd_f = c4.number_input("Fast", 5, 20, 12)
-        macd_s = c4.number_input("Slow", 20, 40, 26)
-        macd_sig = c4.number_input("Signal", 5, 15, 9)
+    # Selector de acción desde nuestras listas o manual
+    lista_opciones = list(set(["CHILE.SN"] + tickers_interes))
+    t_analisis = st.selectbox("Selecciona acción para analizar:", lista_opciones)
+    
+    col_a1, col_a2 = st.columns(2)
+    f_inicio = col_a1.date_input("Desde:", datetime.now() - timedelta(days=365))
+    f_fin = col_a2.date_input("Hasta:", datetime.now())
+    
+    with st.expander("⚙️ Parámetros Técnicos"):
+        pa1, pa2, pa3 = st.columns(3)
+        s_p = pa1.slider("SMA Period", 5, 200, 50)
+        e_p = pa2.slider("EMA Period", 5, 100, 20)
+        r_p = pa3.slider("RSI Period", 2, 30, 14)
 
-    if st.button("📊 Generar Análisis"):
-        with st.spinner("Descargando historial y calculando indicadores..."):
-            try:
-                data = yf.download(analisis_ticker, period="1y", progress=False)
-                if not data.empty:
-                    # Calculamos todo
-                    data = calcular_indicadores(data, sma_p, ema_p, rsi_p, macd_f, macd_s, macd_sig)
-                    
-                    # --- CREAR GRÁFICO PROFESIONAL CON PLOTLY ---
-                    fig = make_subplots(rows=3, cols=1, shared_xaxes=True, 
-                                        vertical_spacing=0.05, row_heights=[0.5, 0.25, 0.25],
-                                        subplot_titles=("Precio y Medias Móviles", "RSI (Fuerza Relativa)", "MACD"))
-                    
-                    # 1. Velas, SMA y EMA
-                    fig.add_trace(go.Candlestick(x=data.index, open=data['Open'], high=data['High'], 
-                                                 low=data['Low'], close=data['Close'], name='Precio'), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=data.index, y=data[f'SMA_{sma_p}'], line=dict(color='orange', width=1.5), name=f'SMA {sma_p}'), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=data.index, y=data[f'EMA_{ema_p}'], line=dict(color='blue', width=1.5), name=f'EMA {ema_p}'), row=1, col=1)
-                    
-                    # 2. RSI
-                    fig.add_trace(go.Scatter(x=data.index, y=data['RSI'], line=dict(color='purple', width=1.5), name='RSI'), row=2, col=1)
-                    fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
-                    fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
-                    
-                    # 3. MACD
-                    fig.add_trace(go.Scatter(x=data.index, y=data['MACD'], line=dict(color='blue', width=1.5), name='MACD'), row=3, col=1)
-                    fig.add_trace(go.Scatter(x=data.index, y=data['Signal'], line=dict(color='orange', width=1.5), name='Signal'), row=3, col=1)
-                    fig.add_trace(go.Bar(x=data.index, y=data['Histograma'], name='Hist', marker_color='gray'), row=3, col=1)
-                    
-                    fig.update_layout(height=800, xaxis_rangeslider_visible=False, template="plotly_white")
-                    st.plotly_chart(fig, use_container_width=True)
+    if st.button("🚀 Ejecutar Análisis"):
+        data = yf.download(t_analisis, start=f_inicio, end=f_fin, progress=False)
+        
+        if not data.empty:
+            data = calcular_indicadores(data, s_p, e_p, r_p, 12, 26, 9)
+            
+            # FIGURA
+            fig = make_subplots(rows=3, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.6, 0.2, 0.2])
+            
+            # 1. VELAS
+            fig.add_trace(go.Candlestick(x=data.index, open=data['Open'], high=data['High'], low=data['Low'], close=data['Close'], name="Velas"), row=1, col=1)
+            fig.add_trace(go.Scatter(x=data.index, y=data['SMA'], name="SMA", line=dict(color='blue')), row=1, col=1)
+            
+            # 2. RSI
+            fig.add_trace(go.Scatter(x=data.index, y=data['RSI'], name="RSI", line=dict(color='purple')), row=2, col=1)
+            fig.add_hline(y=70, line_dash="dash", line_color="red", row=2, col=1)
+            fig.add_hline(y=30, line_dash="dash", line_color="green", row=2, col=1)
+            
+            # 3. MACD
+            fig.add_trace(go.Scatter(x=data.index, y=data['MACD'], name="MACD"), row=3, col=1)
+            fig.add_trace(go.Scatter(x=data.index, y=data['Signal'], name="Signal"), row=3, col=1)
 
-                    # --- ANÁLISIS AUTOMATIZADO (TEXTO) ---
-                    st.subheader(f"🧠 Análisis Automatizado para {analisis_ticker}")
-                    
-                    ultimo_precio = data['Close'].iloc[-1]
-                    ultimo_rsi = data['RSI'].iloc[-1]
-                    ultimo_macd = data['MACD'].iloc[-1]
-                    ultima_signal = data['Signal'].iloc[-1]
-                    sma_actual = data[f'SMA_{sma_p}'].iloc[-1]
-                    
-                    colA, colB = st.columns(2)
-                    
-                    with colA:
-                        st.markdown("#### 📉 Resumen RSI")
-                        if ultimo_rsi > 70:
-                            st.error(f"El RSI está en **{ultimo_rsi:.2f}** (Sobrecompra). Históricamente, esto sugiere que el activo está caro y podría haber una corrección o caída de precio pronto. **Sugerencia:** Precaución al comprar, considerar tomar ganancias.")
-                        elif ultimo_rsi < 30:
-                            st.success(f"El RSI está en **{ultimo_rsi:.2f}** (Sobreventa). El activo ha sido muy castigado y podría estar barato. **Sugerencia:** Posible oportunidad de compra (rebote).")
-                        else:
-                            st.info(f"El RSI está en **{ultimo_rsi:.2f}** (Zona Neutral). No hay señales claras de agotamiento por parte de compradores ni vendedores.")
-                            
-                    with colB:
-                        st.markdown("#### 📊 Resumen MACD y Tendencia")
-                        tendencia = "Alcista 🐂" if ultimo_precio > sma_actual else "Bajista 🐻"
-                        st.write(f"**Tendencia General (SMA):** {tendencia}")
-                        
-                        if ultimo_macd > ultima_signal:
-                            st.success(f"El MACD ({ultimo_macd:.2f}) cruzó por ENCIMA de la señal ({ultima_signal:.2f}). Esto es una **Señal de Compra** o momentum positivo a corto plazo.")
-                        else:
-                            st.error(f"El MACD ({ultimo_macd:.2f}) está por DEBAJO de la señal ({ultima_signal:.2f}). Esto indica momentum negativo. **Señal de Venta** o espera.")
-
-            except Exception as e:
-                st.error(f"Error al procesar los gráficos: {e}")
+            fig.update_layout(height=900, template="plotly_dark", xaxis_rangeslider_visible=False)
+            st.plotly_chart(fig, use_container_width=True)
+            
+            # ANALISIS AUTOMÁTICO
+            rsi_act = data['RSI'].iloc[-1]
+            st.subheader("💡 Sugerencia del Sistema")
+            if rsi_act > 70:
+                st.warning(f"RSI en {rsi_act:.2f}: SOBRECOMPRA. El precio está muy alto, sugiere esperar o vender.")
+            elif rsi_act < 30:
+                st.success(f"RSI en {rsi_act:.2f}: SOBREVENTA. Oportunidad de compra detectada.")
+            else:
+                st.info(f"RSI en {rsi_act:.2f}: Tendencia neutral.")
+        else:
+            st.error("No se pudieron cargar datos para este periodo.")
